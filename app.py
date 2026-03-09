@@ -29,7 +29,7 @@ UI_TEXT = {
         'map_header': '📍 Site Map Overview',
         'map_caption': 'Interactive map view of the measurement points.',
         'map_pt_name': 'Point Name',
-        'map_no_coord': 'No coordinates found to display on map.',
+        'map_no_coord': 'No valid geographic coordinates found to display on map.',
         'rep_header': '📄 Report Generator',
         'back_dash': '← Back to Dashboard',
         'proj_details': 'Project Details',
@@ -79,7 +79,7 @@ UI_TEXT = {
         'map_header': '📍 Standortkarte Übersicht',
         'map_caption': 'Interaktive Kartenansicht der Messpunkte.',
         'map_pt_name': 'Punktname',
-        'map_no_coord': 'Keine Koordinaten für die Karte gefunden.',
+        'map_no_coord': 'Keine gültigen geografischen Koordinaten für die Karte gefunden.',
         'rep_header': '📄 Berichtsgenerator',
         'back_dash': '← Zurück zum Dashboard',
         'proj_details': 'Projektdetails',
@@ -353,7 +353,7 @@ def parse_latlon_value(coord_str):
         deg = float(match.group(1))
         min = float(match.group(2))
         sec = float(match.group(3))
-        direc = match.group(4)
+        direc = match.group(4) if match.lastindex >= 4 else None
         dd = deg + min / 60 + sec / 3600
         if direc in ['S', 'W']: dd *= -1
         return dd
@@ -367,18 +367,21 @@ def parse_latlon_value(coord_str):
 def process_coordinates(df):
     """
     Advanced coordinate processor. 
-    It auto-detects if Trimble exported coordinates in DD.MMSSssss format 
-    by validating against UTM derived coordinates.
+    1. Rejects Total Station Angles (HA/VA) that are outside valid Lat/Lon ranges.
+    2. Uses fallback UTM to Lat/Lon conversion for valid Easting/Northing.
+    3. Handles DMS disguised as Decimal Degrees quirk.
     """
-    lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
-    lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
-    e_col = 'Measured E' if 'Measured E' in df.columns else 'Gemess. Rechtswert'
-    n_col = 'Measured N' if 'Measured N' in df.columns else 'Gemess. Hochwert'
+    lat_col = next((c for c in ['HA / Lat', 'Hz / Breite'] if c in df.columns), None)
+    lon_col = next((c for c in ['VA / Long', 'V / Länge'] if c in df.columns), None)
+    e_col = next((c for c in ['Measured E', 'Gemess. Rechtswert'] if c in df.columns), None)
+    n_col = next((c for c in ['Measured N', 'Gemess. Hochwert'] if c in df.columns), None)
     
-    df['__lat_raw'] = df[lat_col].apply(parse_latlon_value) if lat_col in df.columns else None
-    df['__lon_raw'] = df[lon_col].apply(parse_latlon_value) if lon_col in df.columns else None
-    df['__e'] = df[e_col] if e_col in df.columns else None
-    df['__n'] = df[n_col] if n_col in df.columns else None
+    # Sadece dönüştürmeyi dene, henüz geçerlilik kontrolü yapma
+    df['lat'] = df[lat_col].apply(parse_latlon_value) if lat_col else None
+    df['lon'] = df[lon_col].apply(parse_latlon_value) if lon_col else None
+    
+    df['__e'] = df[e_col] if e_col else None
+    df['__n'] = df[n_col] if n_col else None
 
     def decode_dms(val):
         if pd.isna(val): return val
@@ -389,71 +392,91 @@ def process_coordinates(df):
         s = (val - d - m / 100) * 10000
         return sign * (d + m / 60 + s / 3600)
 
-    use_dms = False
-    valid_mask = df['__lat_raw'].notna() & df['__lon_raw'].notna() & df['__e'].notna() & df['__n'].notna()
-    if valid_mask.any():
-        idx = valid_mask.idxmax()
-        raw_lat = df.loc[idx, '__lat_raw']
-        raw_lon = df.loc[idx, '__lon_raw']
-        e_val = df.loc[idx, '__e']
-        n_val = df.loc[idx, '__n']
-        
-        zone = 32
-        if e_val > 31000000 and e_val < 34000000:
-            zone = int(e_val / 1000000)
-            e_val = e_val % 10000000
-        elif raw_lon > 0:
-            zone = int(raw_lon / 6) + 31
-            
-        epsg_code = f"epsg:{32600 + zone}" if raw_lat >= 0 else f"epsg:{32700 + zone}"
-        
-        try:
-            transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
-            utm_lon, utm_lat = transformer.transform(e_val, n_val)
-            
-            lat_dms = decode_dms(raw_lat)
-            lon_dms = decode_dms(raw_lon)
-            
-            dist_dd = (raw_lat - utm_lat)**2 + (raw_lon - utm_lon)**2
-            dist_dms = (lat_dms - utm_lat)**2 + (lon_dms - utm_lon)**2
-            
-            # Trimble Quirks: If interpreting as DD.MMSSssss places the point much closer to the true UTM location
-            if dist_dms < dist_dd and dist_dms < 0.001:
-                use_dms = True
-        except:
-            pass
+    # 1. Total Station Defense
+    # TS cihazları Lat/Lon kolonlarına açı yazar (örn: 146 gon, 398 gon vb.)
+    # Eğer dosyadaki herhangi bir satırda Enlem > 90 veya Boylam > 180 ise bu kesinlikle Total Station verisidir.
+    is_ts_file = False
+    if df['lat'].max() > 90 or df['lat'].min() < -90 or df['lon'].max() > 180 or df['lon'].min() < -180:
+        is_ts_file = True
 
-    if use_dms:
-        df['lat'] = df['__lat_raw'].apply(decode_dms)
-        df['lon'] = df['__lon_raw'].apply(decode_dms)
-    else:
-        df['lat'] = df['__lat_raw']
-        df['lon'] = df['__lon_raw']
+    # Eğer TS ise, sahte Lat/Lon (açı) değerlerini haritayı bozmaması için tamamen temizle
+    if is_ts_file:
+        df['lat'] = None
+        df['lon'] = None
 
-    missing = df['lat'].isnull() | df['lon'].isnull()
-    if missing.any() and df['__e'].notna().any():
-        for idx, row in df[missing].iterrows():
-            if pd.notna(row['__e']) and pd.notna(row['__n']):
-                e_val = row['__e']
-                n_val = row['__n']
-                
-                zone = 32
-                if e_val > 31000000 and e_val < 34000000:
-                    zone = int(e_val / 1000000)
-                    e_val = e_val % 10000000
-                elif pd.notna(row['__lon_raw']) and row['__lon_raw'] > 0:
-                    zone = int(row['__lon_raw'] / 6) + 31
-                    
-                epsg_code = f"epsg:{32600 + zone}"
+    # 2. UTM Dönüşümü (Lat/Lon eksikse veya TS tarafından temizlenmişse)
+    for idx, row in df.iterrows():
+        lat_val = row.get('lat')
+        lon_val = row.get('lon')
+        e_val = row.get('__e')
+        n_val = row.get('__n')
+        
+        if pd.isna(lat_val) or pd.isna(lon_val):
+            if pd.notna(e_val) and pd.notna(n_val):
                 try:
+                    e_float = float(e_val)
+                    n_float = float(n_val)
+                    
+                    zone = 32 # Almanya için varsayılan Zone 32
+                    
+                    if e_float > 31000000 and e_float < 34000000:
+                        zone = int(e_float / 1000000)
+                        e_float = e_float % 10000000
+                    elif e_float > 3200000 and e_float < 3400000:
+                        zone = int(e_float / 100000)
+                        e_float = e_float % 1000000
+
+                    epsg_code = f"epsg:{32600 + zone}"
                     transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
-                    lon_val, lat_val = transformer.transform(e_val, n_val)
-                    df.at[idx, 'lat'] = lat_val
-                    df.at[idx, 'lon'] = lon_val
+                    new_lon, new_lat = transformer.transform(e_float, n_float)
+                    
+                    if -90 <= new_lat <= 90 and -180 <= new_lon <= 180:
+                        df.at[idx, 'lat'] = new_lat
+                        df.at[idx, 'lon'] = new_lon
                 except:
                     pass
-                    
-    df = df.drop(columns=['__e', '__n', '__lat_raw', '__lon_raw'])
+                 
+    # 3. Quirks check: DMS disguised as DD? 
+    # (Sadece TS dosyası değilse ve hala düzgün gibi görünen lat/lon'lar varsa)
+    if not is_ts_file:
+        valid_mask = df['lat'].notna() & df['lon'].notna() & df['__e'].notna() & df['__n'].notna()
+        use_dms = False
+        
+        if valid_mask.any():
+            idx = valid_mask.idxmax()
+            test_lat = df.loc[idx, 'lat']
+            test_lon = df.loc[idx, 'lon']
+            try:
+                 e_val = float(df.loc[idx, '__e'])
+                 n_val = float(df.loc[idx, '__n'])
+                 
+                 zone = 32
+                 if e_val > 31000000 and e_val < 34000000:
+                     zone = int(e_val / 1000000)
+                     e_val = e_val % 10000000
+                 elif test_lon > 0:
+                     zone = int(test_lon / 6) + 31
+                     
+                 epsg_code = f"epsg:{32600 + zone}" if test_lat >= 0 else f"epsg:{32700 + zone}"
+                 transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
+                 utm_lon, utm_lat = transformer.transform(e_val, n_val)
+                 
+                 lat_dms = decode_dms(test_lat)
+                 lon_dms = decode_dms(test_lon)
+                 
+                 dist_dd = (test_lat - utm_lat)**2 + (test_lon - utm_lon)**2
+                 dist_dms = (lat_dms - utm_lat)**2 + (lon_dms - utm_lon)**2
+                 
+                 if dist_dms < dist_dd and dist_dms < 0.001:
+                     use_dms = True
+            except:
+                 pass
+
+        if use_dms:
+            df['lat'] = df['lat'].apply(decode_dms)
+            df['lon'] = df['lon'].apply(decode_dms)
+
+    df = df.drop(columns=['__e', '__n'])
     return df
 
 @st.cache_data(show_spinner=False)
@@ -583,7 +606,6 @@ def show_dashboard():
                 # --- MERGING LOGIC ---
                 df = pd.DataFrame()
                 if df_sessions is not None and df_points is not None:
-                    # Both dataframes need to be sorted by timestamp for merge_asof
                     df_points = df_points.sort_values('timestamp')
                     df_sessions = df_sessions.sort_values('timestamp')
                     df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
@@ -706,11 +728,15 @@ def show_dashboard():
                 map_data_cols.append(pt_col)
                 tooltip_html = f"<b>{ui['map_pt_name']}:</b> {{{pt_col}}}<br/>" + tooltip_html
             
+            # Use only valid coordinates for map rendering
             map_data = df[map_data_cols].dropna(subset=['lat', 'lon'])
 
             if not map_data.empty:
-                first_pt = map_data.iloc[[0]]
-                view_state = pdk.ViewState(latitude=first_pt['lat'].iloc[0], longitude=first_pt['lon'].iloc[0], zoom=16, pitch=0)
+                # Center map dynamically based on mean coordinates of ALL valid points, not just the first one
+                center_lat = map_data['lat'].mean()
+                center_lon = map_data['lon'].mean()
+                
+                view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=16, pitch=0)
                 
                 selected_indices = st.session_state.get('dashboard_selection', [])
                 
@@ -718,22 +744,22 @@ def show_dashboard():
                     sel_idxs_pd = pd.Index(selected_indices)
                     valid_sel_idxs = sel_idxs_pd.intersection(map_data.index)
                     sel_pts = map_data.loc[valid_sel_idxs]
-                    other_pts = map_data.loc[map_data.index.difference(valid_sel_idxs).difference([first_pt.index[0]])]
+                    other_pts = map_data.loc[map_data.index.difference(valid_sel_idxs)]
                 else:
                     sel_pts = pd.DataFrame(columns=map_data.columns)
-                    other_pts = map_data.loc[map_data.index.difference([first_pt.index[0]])]
+                    other_pts = map_data
                 
-                layers = [
-                    pdk.Layer('ScatterplotLayer', data=other_pts, get_position='[lon, lat]', get_fill_color='[0, 100, 255]', get_radius=5, radius_units='pixels', pickable=True),
-                    pdk.Layer('ScatterplotLayer', data=first_pt, get_position='[lon, lat]', get_fill_color='[255, 0, 0]', get_radius=8, radius_units='pixels', pickable=True)
-                ]
+                layers = []
+                if not other_pts.empty:
+                    layers.append(pdk.Layer('ScatterplotLayer', data=other_pts, get_position='[lon, lat]', get_fill_color='[0, 100, 255]', get_radius=5, radius_units='pixels', pickable=True))
                 
                 if not sel_pts.empty:
-                    layers.append(pdk.Layer('ScatterplotLayer', data=sel_pts, get_position='[lon, lat]', get_fill_color='[0, 255, 0]', get_radius=8, radius_units='pixels'))
+                    layers.append(pdk.Layer('ScatterplotLayer', data=sel_pts, get_position='[lon, lat]', get_fill_color='[0, 255, 0]', get_radius=8, radius_units='pixels', pickable=True))
                 
                 carto_light_style = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
                 st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=carto_light_style, tooltip={"html": tooltip_html}), height=600)
             else:
+                # Show explicit error message without rendering broken map
                 st.info(ui['map_no_coord'])
 
 def show_report_generator():
