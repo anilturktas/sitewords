@@ -3,6 +3,7 @@ import pandas as pd
 import pydeck as pdk
 import io
 import re
+import math
 from pyproj import Transformer, CRS
 from fpdf import FPDF
 from datetime import datetime
@@ -26,6 +27,7 @@ UI_TEXT = {
         'report_sel_base': '📄 Report Selection',
         'report_sel_help': 'Create report from selected rows.',
         'map_header': '📍 Site Map Overview',
+        'map_caption': 'Interactive map view of the measurement points.',
         'map_pt_name': 'Point Name',
         'map_no_coord': 'No coordinates found to display on map.',
         'rep_header': '📄 Report Generator',
@@ -75,6 +77,7 @@ UI_TEXT = {
         'report_sel_base': '📄 Auswahl berichten',
         'report_sel_help': 'Bericht aus ausgewählten Zeilen erstellen.',
         'map_header': '📍 Standortkarte Übersicht',
+        'map_caption': 'Interaktive Kartenansicht der Messpunkte.',
         'map_pt_name': 'Punktname',
         'map_no_coord': 'Keine Koordinaten für die Karte gefunden.',
         'rep_header': '📄 Berichtsgenerator',
@@ -338,26 +341,120 @@ def create_pdf(df, header_info, lang):
     return output
 
 # --- Data Parsing Functions (EN/DE Supported) ---
+def parse_latlon_value(coord_str):
+    if pd.isna(coord_str): return None
+    if isinstance(coord_str, (int, float)): return float(coord_str)
+    
+    coord_str = str(coord_str).strip().replace(',', '.')
+    
+    if '°' in coord_str or "'" in coord_str or '"' in coord_str:
+        match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])?', coord_str)
+        if not match: return None
+        deg = float(match.group(1))
+        min = float(match.group(2))
+        sec = float(match.group(3))
+        direc = match.group(4)
+        dd = deg + min / 60 + sec / 3600
+        if direc in ['S', 'W']: dd *= -1
+        return dd
+    else:
+        try: 
+            return float(coord_str)
+        except (ValueError, TypeError): 
+            return None
+
 @st.cache_data(show_spinner=False)
-def convert_ne_to_latlon(df, easting_col, northing_col, source_epsg="epsg:32632"):
-    try:
-        source_crs = CRS(source_epsg)
-        target_crs = CRS("epsg:4326")
-        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
-        valid_data = df.loc[pd.to_numeric(df[easting_col], errors='coerce').notna() & 
-                            pd.to_numeric(df[northing_col], errors='coerce').notna()]
-        if valid_data.empty: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
+def process_coordinates(df):
+    """
+    Advanced coordinate processor. 
+    It auto-detects if Trimble exported coordinates in DD.MMSSssss format 
+    by validating against UTM derived coordinates.
+    """
+    lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
+    lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
+    e_col = 'Measured E' if 'Measured E' in df.columns else 'Gemess. Rechtswert'
+    n_col = 'Measured N' if 'Measured N' in df.columns else 'Gemess. Hochwert'
+    
+    df['__lat_raw'] = df[lat_col].apply(parse_latlon_value) if lat_col in df.columns else None
+    df['__lon_raw'] = df[lon_col].apply(parse_latlon_value) if lon_col in df.columns else None
+    df['__e'] = df[e_col] if e_col in df.columns else None
+    df['__n'] = df[n_col] if n_col in df.columns else None
+
+    def decode_dms(val):
+        if pd.isna(val): return val
+        sign = -1 if val < 0 else 1
+        val = abs(val)
+        d = int(val)
+        m = int((val - d) * 100)
+        s = (val - d - m / 100) * 10000
+        return sign * (d + m / 60 + s / 3600)
+
+    use_dms = False
+    valid_mask = df['__lat_raw'].notna() & df['__lon_raw'].notna() & df['__e'].notna() & df['__n'].notna()
+    if valid_mask.any():
+        idx = valid_mask.idxmax()
+        raw_lat = df.loc[idx, '__lat_raw']
+        raw_lon = df.loc[idx, '__lon_raw']
+        e_val = df.loc[idx, '__e']
+        n_val = df.loc[idx, '__n']
         
-        e_vals = valid_data[easting_col].values.astype(float)
-        n_vals = valid_data[northing_col].values.astype(float)
-        
-        # Handle 8-digit UTM Easting (e.g., 32684930 -> 684930) commonly used in Germany
-        if len(e_vals) > 0 and e_vals.mean() > 30000000:
-            e_vals = e_vals % 10000000
+        zone = 32
+        if e_val > 31000000 and e_val < 34000000:
+            zone = int(e_val / 1000000)
+            e_val = e_val % 10000000
+        elif raw_lon > 0:
+            zone = int(raw_lon / 6) + 31
             
-        lon, lat = transformer.transform(e_vals, n_vals)
-        return pd.Series(lat, index=valid_data.index), pd.Series(lon, index=valid_data.index)
-    except Exception: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
+        epsg_code = f"epsg:{32600 + zone}" if raw_lat >= 0 else f"epsg:{32700 + zone}"
+        
+        try:
+            transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
+            utm_lon, utm_lat = transformer.transform(e_val, n_val)
+            
+            lat_dms = decode_dms(raw_lat)
+            lon_dms = decode_dms(raw_lon)
+            
+            dist_dd = (raw_lat - utm_lat)**2 + (raw_lon - utm_lon)**2
+            dist_dms = (lat_dms - utm_lat)**2 + (lon_dms - utm_lon)**2
+            
+            # Trimble Quirks: If interpreting as DD.MMSSssss places the point much closer to the true UTM location
+            if dist_dms < dist_dd and dist_dms < 0.001:
+                use_dms = True
+        except:
+            pass
+
+    if use_dms:
+        df['lat'] = df['__lat_raw'].apply(decode_dms)
+        df['lon'] = df['__lon_raw'].apply(decode_dms)
+    else:
+        df['lat'] = df['__lat_raw']
+        df['lon'] = df['__lon_raw']
+
+    missing = df['lat'].isnull() | df['lon'].isnull()
+    if missing.any() and df['__e'].notna().any():
+        for idx, row in df[missing].iterrows():
+            if pd.notna(row['__e']) and pd.notna(row['__n']):
+                e_val = row['__e']
+                n_val = row['__n']
+                
+                zone = 32
+                if e_val > 31000000 and e_val < 34000000:
+                    zone = int(e_val / 1000000)
+                    e_val = e_val % 10000000
+                elif pd.notna(row['__lon_raw']) and row['__lon_raw'] > 0:
+                    zone = int(row['__lon_raw'] / 6) + 31
+                    
+                epsg_code = f"epsg:{32600 + zone}"
+                try:
+                    transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
+                    lon_val, lat_val = transformer.transform(e_val, n_val)
+                    df.at[idx, 'lat'] = lat_val
+                    df.at[idx, 'lon'] = lon_val
+                except:
+                    pass
+                    
+    df = df.drop(columns=['__e', '__n', '__lat_raw', '__lon_raw'])
+    return df
 
 @st.cache_data(show_spinner=False)
 def parse_task_log_sessions(file_content, region_code):
@@ -426,23 +523,6 @@ def parse_record_log(file_content, region_code):
     
     return None
 
-def parse_latlon_value(coord_str):
-    if pd.isna(coord_str): return None
-    # Fix for EU mode: if pandas already parsed it as float, return it directly
-    if isinstance(coord_str, (int, float)): return float(coord_str)
-    
-    coord_str = str(coord_str).strip().replace(',', '.')
-    if '°' in coord_str or "'" in coord_str or '"' in coord_str:
-        match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])', coord_str)
-        if not match: return None
-        deg, min, sec, direc = match.groups()
-        dd = float(deg) + float(min) / 60 + float(sec) / 3600
-        if direc in ['S', 'W']: dd *= -1
-        return dd
-    else:
-        try: return float(coord_str)
-        except (ValueError, TypeError): return None
-
 # --- Streamlit UI Setup ---
 st.set_page_config(page_title="SiteWords", layout="wide")
 
@@ -503,6 +583,9 @@ def show_dashboard():
                 # --- MERGING LOGIC ---
                 df = pd.DataFrame()
                 if df_sessions is not None and df_points is not None:
+                    # Both dataframes need to be sorted by timestamp for merge_asof
+                    df_points = df_points.sort_values('timestamp')
+                    df_sessions = df_sessions.sort_values('timestamp')
                     df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
                 elif df_points is not None:
                     df = df_points
@@ -518,21 +601,8 @@ def show_dashboard():
                 else:
                     st.session_state['lang'] = 'en'
                     
-                # Coordinate Processing (Multi-Language)
-                lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
-                lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
-                
-                df['lat'] = df[lat_col].apply(parse_latlon_value) if lat_col in df.columns else None
-                df['lon'] = df[lon_col].apply(parse_latlon_value) if lon_col in df.columns else None
-                
-                missing = df['lat'].isnull()
-                if missing.any():
-                    e_col = 'Measured E' if 'Measured E' in df.columns else 'Gemess. Rechtswert'
-                    n_col = 'Measured N' if 'Measured N' in df.columns else 'Gemess. Hochwert'
-                    if e_col in df.columns and n_col in df.columns:
-                        lc, lnc = convert_ne_to_latlon(df[missing], e_col, n_col)
-                        df.loc[missing, 'lat'] = lc
-                        df.loc[missing, 'lon'] = lnc
+                # Advanced Coordinate Processing
+                df = process_coordinates(df)
                 
                 # Save processed data
                 st.session_state['processed_df'] = df
@@ -560,25 +630,15 @@ def show_dashboard():
                     
                     df = pd.DataFrame()
                     if df_sessions is not None and df_points is not None:
+                        df_points = df_points.sort_values('timestamp')
+                        df_sessions = df_sessions.sort_values('timestamp')
                         df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
                     elif df_points is not None:
                         df = df_points
                     
                     if not df.empty:
-                        lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
-                        lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
-                        
-                        df['lat'] = df[lat_col].apply(parse_latlon_value) if lat_col in df.columns else None
-                        df['lon'] = df[lon_col].apply(parse_latlon_value) if lon_col in df.columns else None
-                        
-                        missing = df['lat'].isnull()
-                        if missing.any():
-                            e_col = 'Measured E' if 'Measured E' in df.columns else 'Gemess. Rechtswert'
-                            n_col = 'Measured N' if 'Measured N' in df.columns else 'Gemess. Hochwert'
-                            if e_col in df.columns and n_col in df.columns:
-                                lc, lnc = convert_ne_to_latlon(df[missing], e_col, n_col)
-                                df.loc[missing, 'lat'] = lc
-                                df.loc[missing, 'lon'] = lnc
+                        # Advanced Coordinate Processing
+                        df = process_coordinates(df)
                                 
                         st.session_state['processed_df'] = df
                         st.session_state['dashboard_selection'] = []
@@ -635,6 +695,8 @@ def show_dashboard():
 
         with col_map:
             st.subheader(ui['map_header'])
+            st.caption(ui['map_caption'])
+            
             map_data_cols = ['lat', 'lon']
             
             # Dynamic point name detection
