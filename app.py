@@ -4,10 +4,304 @@ import pydeck as pdk
 import io
 import re
 from pyproj import Transformer, CRS
+from fpdf import FPDF
+from datetime import datetime
+
+# --- Helper Functions ---
+
+def to_excel(df, header_info):
+    """Generates an Excel file with metadata header and formatting."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        start_row = 8 
+        
+        df.to_excel(writer, index=False, sheet_name='Report', startrow=start_row)
+        
+        workbook = writer.book
+        worksheet = writer.sheets['Report']
+        
+        # --- Formats ---
+        title_format = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#2c3e50', 'align': 'left'})
+        label_format = workbook.add_format({'bold': True, 'font_color': '#34495e', 'align': 'left'})
+        text_format = workbook.add_format({'font_color': '#000000', 'align': 'left'})
+        header_format = workbook.add_format({'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#2980b9', 'font_color': 'white', 'border': 1})
+        
+        # --- Write Metadata ---
+        # Title
+        worksheet.write(0, 0, "📑 SiteWords Report", title_format)
+        
+        metadata = [
+            ("Project:", header_info['project']),
+            ("Work Order:", header_info['wo']),
+            ("Client:", header_info['client']),
+            ("Company:", header_info['company']),
+            ("Date:", header_info['date']),
+            ("Time:", header_info['time'])
+        ]
+        
+        for i, (label, value) in enumerate(metadata):
+            worksheet.write(2 + i, 0, label, label_format)
+            worksheet.write(2 + i, 1, value, text_format)
+
+        # --- Format Table Header ---
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(start_row, col_num, value, header_format)
+            worksheet.set_column(col_num, col_num, 15)
+            
+    return output.getvalue()
+
+def to_csv(df):
+    """Generates a CSV file."""
+    return df.to_csv(index=False).encode('utf-8')
+
+def to_html(df, header_info):
+    """Generates a stylized HTML report."""
+    
+    html = f"""
+    <html>
+    <head>
+    <meta charset="UTF-8">
+    <style>
+        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; color: #333; }}
+        
+        .header-container {{ 
+            border-bottom: 2px solid #3498db; 
+            padding-bottom: 15px; 
+            margin-bottom: 20px; 
+        }}
+        
+        .header-container h1 {{ 
+            border: none; 
+            margin: 0; 
+            padding: 0; 
+            color: #2c3e50;
+            font-size: 28px;
+        }}
+        
+        .meta-container {{ background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 30px; border-left: 5px solid #2980b9; }}
+        .meta-row {{ display: flex; margin-bottom: 8px; align-items: center; }}
+        .meta-icon {{ margin-right: 10px; font-size: 1.2em; }}
+        .meta-label {{ font-weight: bold; width: 120px; color: #555; }}
+        .meta-value {{ color: #000; }}
+        table {{ border-collapse: collapse; width: 100%; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+        th, td {{ border: 1px solid #e0e0e0; padding: 12px; text-align: left; font-size: 14px; }}
+        th {{ background-color: #2980b9; color: white; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }}
+        tr:nth-child(even) {{ background-color: #f8f9fa; }}
+        tr:hover {{ background-color: #e9ecef; }}
+    </style>
+    </head>
+    <body>
+    <div class="header-container">
+        <h1>📑 SiteWords Report</h1>
+    </div>
+    
+    <div class="meta-container">
+        <div class="meta-row"><span class="meta-icon">🏗️</span><span class="meta-label">Project:</span><span class="meta-value">{header_info['project']}</span></div>
+        <div class="meta-row"><span class="meta-icon">📋</span><span class="meta-label">Work Order:</span><span class="meta-value">{header_info['wo']}</span></div>
+        <div class="meta-row"><span class="meta-icon">👤</span><span class="meta-label">Client:</span><span class="meta-value">{header_info['client']}</span></div>
+        <div class="meta-row"><span class="meta-icon">🏢</span><span class="meta-label">Company:</span><span class="meta-value">{header_info['company']}</span></div>
+        <div class="meta-row"><span class="meta-icon">📅</span><span class="meta-label">Date/Time:</span><span class="meta-value">{header_info['date']} | {header_info['time']}</span></div>
+    </div>
+    
+    {df.to_html(index=False)}
+    </body>
+    </html>
+    """
+    return html.encode('utf-8')
+
+def create_pdf(df, header_info):
+    """Generates a PDF report with text wrapping and dynamic layouts."""
+    
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 16)
+            self.set_text_color(44, 62, 80)
+            self.cell(0, 10, 'SiteWords Report', 0, 1, 'L') 
+            self.ln(5)
+            
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.set_text_color(128)
+            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+
+    pdf = PDF(orientation='L', unit='mm', format='A4') 
+    pdf.add_page()
+    
+    # --- Metadata Section ---
+    pdf.set_font('Arial', 'B', 12)
+    pdf.set_text_color(0)
+    
+    # Light background for metadata
+    pdf.set_fill_color(248, 249, 250)
+    pdf.rect(10, 25, 277, 35, 'F') 
+    
+    start_y = 30
+    pdf.set_xy(15, start_y)
+    pdf.cell(30, 8, "Project:", 0, 0, 'L')
+    pdf.set_font('Arial', '', 12)
+    
+    # Safely handle special characters in headers
+    safe_project = header_info['project'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(100, 8, safe_project, 0, 1, 'L')
+    
+    pdf.set_x(15)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6, "Work Order:", 0, 0, 'L')
+    pdf.set_font('Arial', '', 10)
+    safe_wo = header_info['wo'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(100, 6, safe_wo, 0, 1, 'L')
+    
+    pdf.set_x(15)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6, "Client:", 0, 0, 'L')
+    pdf.set_font('Arial', '', 10)
+    safe_client = header_info['client'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(100, 6, safe_client, 0, 1, 'L')
+    
+    pdf.set_x(15)
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(30, 6, "Date/Time:", 0, 0, 'L')
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(100, 6, f"{header_info['date']} | {header_info['time']}", 0, 1, 'L')
+    
+    pdf.ln(10)
+
+    # --- Table Settings ---
+    num_cols = len(df.columns)
+    page_width = 277
+    col_width = page_width / num_cols if num_cols > 0 else page_width
+        
+    font_size = 9
+    if num_cols > 8: font_size = 7
+    if num_cols > 12: font_size = 6
+    
+    line_height = pdf.font_size * 2
+    
+    # --- Table Header ---
+    pdf.set_font('Arial', 'B', font_size)
+    pdf.set_fill_color(41, 128, 185)
+    pdf.set_text_color(255)
+    
+    for col in df.columns:
+        header_text = str(col).encode('latin-1', 'replace').decode('latin-1')
+        # Truncate header slightly to prevent bleeding if extremely long
+        pdf.cell(col_width, line_height, header_text[:20], border=1, align='C', fill=True)
+    pdf.ln(line_height)
+    
+    # --- Table Rows (With Multi-Cell simulation for wrapping) ---
+    pdf.set_font('Arial', '', font_size)
+    pdf.set_text_color(0)
+    
+    for index, row in df.iterrows():
+        # Check if we need to add a new page
+        if pdf.get_y() > 180: # A4 Landscape height is ~210, leave bottom margin
+            pdf.add_page()
+            # Redraw Header
+            pdf.set_font('Arial', 'B', font_size)
+            pdf.set_fill_color(41, 128, 185)
+            pdf.set_text_color(255)
+            for col in df.columns:
+                header_text = str(col).encode('latin-1', 'replace').decode('latin-1')
+                pdf.cell(col_width, line_height, header_text[:20], border=1, align='C', fill=True)
+            pdf.ln(line_height)
+            pdf.set_font('Arial', '', font_size)
+            pdf.set_text_color(0)
+
+        # Store initial Y to reset later
+        start_y = pdf.get_y()
+        max_y = start_y
+        
+        # We need to simulate a row with cells of different text heights.
+        # Simple implementation: write text string, if it overflows, let FPDF handle or truncate gracefully.
+        # To avoid complex table wrapping logic that breaks easily, we'll use a clean bounded string.
+        
+        for col in df.columns:
+            text = str(row[col]).encode('latin-1', 'replace').decode('latin-1')
+            
+            # Simple wrap: just print the cell
+            x = pdf.get_x()
+            y = pdf.get_y()
+            
+            # Use multi_cell for wrapping, but reset XY to stay on same row
+            pdf.multi_cell(col_width, line_height * 0.8, text, border=1, align='L')
+            
+            # Record the lowest Y reached by this column
+            if pdf.get_y() > max_y:
+                max_y = pdf.get_y()
+                
+            # Reset position for next column
+            pdf.set_xy(x + col_width, y)
+        
+        # Move to next row
+        pdf.set_y(max_y)
+
+    # FPDF output
+    output = pdf.output(dest='S')
+    # Handle string output (PyFPDF) vs bytes (fpdf2)
+    if isinstance(output, str):
+        return output.encode('latin-1')
+    return output
+
+# --- Data Parsing Functions (Now Cached for Performance) ---
+@st.cache_data(show_spinner=False)
+def convert_ne_to_latlon(df, easting_col, northing_col, source_epsg="epsg:32632"):
+    try:
+        source_crs = CRS(source_epsg)
+        target_crs = CRS("epsg:4326")
+        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+        valid_data = df.loc[pd.to_numeric(df[easting_col], errors='coerce').notna() & 
+                            pd.to_numeric(df[northing_col], errors='coerce').notna()]
+        if valid_data.empty: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
+        lon, lat = transformer.transform(valid_data[easting_col].values, valid_data[northing_col].values)
+        return pd.Series(lat, index=valid_data.index), pd.Series(lon, index=valid_data.index)
+    except Exception: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
+
+@st.cache_data(show_spinner=False)
+def parse_task_log_sessions(file_content, region_code):
+    sessions = []
+    key_map = {"Date": "Date", "Datum": "Date", "Time": "Time", "Zeit": "Time", "Work Order": "Work Order", "Arbeitsauftrag": "Work Order", "Project": "Project", "Projekt": "Project"}
+    for block in re.split(r'\n\s*\n', file_content.strip()):
+        lines = block.strip().split('\n')
+        if not lines or not (lines[0].strip().startswith("Open WO") or lines[0].strip().startswith("Auftrag öffnen")): continue
+        session_data = {}
+        for line in lines:
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                prop, val = parts[1].strip(), "".join(parts[2:]).strip()
+                clean_key = key_map.get(prop)
+                if clean_key: session_data[clean_key] = val
+        if 'Date' in session_data and 'Time' in session_data: sessions.append(session_data)
+    if not sessions: return None
+    df = pd.DataFrame(sessions)
+    datetime_str = df['Date'] + ' ' + df['Time']
+    date_format = '%m/%d/%Y %I:%M:%S %p' if region_code == "US" else '%d.%m.%Y %H:%M:%S'
+    df['timestamp'] = pd.to_datetime(datetime_str, format=date_format, errors='coerce')
+    if df['timestamp'].isnull().any():
+        fallback = '%d.%m.%Y %H:%M:%S' if region_code == "US" else '%m/%d/%Y %I:%M:%S %p'
+        df['timestamp'] = df['timestamp'].fillna(pd.to_datetime(datetime_str, format=fallback, errors='coerce'))
+    return df.dropna(subset=['timestamp']).sort_values('timestamp')[['timestamp', 'Project', 'Work Order']]
+
+@st.cache_data(show_spinner=False)
+def parse_record_log(file_content, region_code):
+    lines = file_content.splitlines()
+    header_index = next((i for i, line in enumerate(lines) if line.strip().startswith("Record Type")), -1)
+    if header_index == -1: return None
+    decimal_sep = '.' if region_code == 'US' else ','
+    df = pd.read_csv(io.StringIO('\n'.join(lines[header_index:])), sep='\t', decimal=decimal_sep)
+    df.columns = df.columns.str.strip()
+    for col in ['Measured N', 'Measured E', 'Measured Elv']:
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors='coerce')
+    time_col = df['Local Time'].str.replace(',', '.', regex=False)
+    datetime_str = df['Date'] + ' ' + time_col
+    date_format = '%m/%d/%Y %H:%M:%S.%f' if region_code == "US" else '%d.%m.%Y %H:%M:%S.%f'
+    fallback = '%d.%m.%Y %H:%M:%S.%f' if region_code == "US" else '%m/%d/%Y %H:%M:%S.%f'
+    df['timestamp'] = pd.to_datetime(datetime_str, format=date_format, errors='coerce')
+    df['timestamp'] = df['timestamp'].fillna(pd.to_datetime(datetime_str, format=fallback, errors='coerce'))
+    return df.dropna(subset=['timestamp']).sort_values('timestamp')
 
 def parse_latlon_value(coord_str):
-    if not isinstance(coord_str, str):
-        return None
+    if not isinstance(coord_str, str): return None
     coord_str = coord_str.strip().replace(',', '.')
     if '°' in coord_str or "'" in coord_str or '"' in coord_str:
         match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])', coord_str)
@@ -20,223 +314,310 @@ def parse_latlon_value(coord_str):
         try: return float(coord_str)
         except (ValueError, TypeError): return None
 
-def convert_ne_to_latlon(df, easting_col, northing_col, source_epsg="epsg:32632"):
-    try:
-        source_crs = CRS(source_epsg)
-        target_crs = CRS("epsg:4326")
-        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
-        
-        valid_data = df.loc[pd.to_numeric(df[easting_col], errors='coerce').notna() & 
-                            pd.to_numeric(df[northing_col], errors='coerce').notna()]
-        
-        if valid_data.empty:
-            return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
-            
-        lon, lat = transformer.transform(valid_data[easting_col].values, valid_data[northing_col].values)
-        
-        lat_series = pd.Series(lat, index=valid_data.index)
-        lon_series = pd.Series(lon, index=valid_data.index)
-        
-        return lat_series, lon_series
-    except Exception as e:
-        st.warning(f"Coordinate conversion failed: {e}. Check EPSG code.")
-        return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
-
-def parse_task_log_sessions(file_content, region_code):
-    sessions = []
-    key_map = {"Date": "Date", "Datum": "Date", "Time": "Time", "Zeit": "Time", "Work Order": "Work Order", "Arbeitsauftrag": "Work Order", "Project": "Project", "Projekt": "Project"}
-    
-    for block in re.split(r'\n\s*\n', file_content.strip()):
-        lines = block.strip().split('\n')
-        if not lines or not (lines[0].strip().startswith("Open WO") or lines[0].strip().startswith("Auftrag öffnen")):
-            continue
-        
-        session_data = {}
-        for line in lines:
-            parts = line.split('\t')
-            if len(parts) >= 3:
-                prop, val = parts[1].strip(), "".join(parts[2:]).strip()
-                clean_key = key_map.get(prop)
-                if clean_key: 
-                    session_data[clean_key] = val
-        if 'Date' in session_data and 'Time' in session_data:
-            sessions.append(session_data)
-            
-    if not sessions: 
-        return None
-        
-    df = pd.DataFrame(sessions)
-    
-    datetime_str = df['Date'] + ' ' + df['Time']
-    
-    if region_code == "US":
-        date_format = '%m/%d/%Y %I:%M:%S %p'
-    else:
-        date_format = '%d.%m.%Y %H:%M:%S'
-        
-    df['timestamp'] = pd.to_datetime(datetime_str, format=date_format, errors='coerce')
-    
-    if df['timestamp'].isnull().any():
-        if region_code == "US":
-            fallback_format = '%d.%m.%Y %H:%M:%S'
-        else:
-            fallback_format = '%m/%d/%Y %I:%M:%S %p'
-        df['timestamp'] = df['timestamp'].fillna(pd.to_datetime(datetime_str, format=fallback_format, errors='coerce'))
-
-    return df.dropna(subset=['timestamp']).sort_values('timestamp')[['timestamp', 'Project', 'Work Order']]
-
-def parse_record_log(file_content, region_code):
-    lines = file_content.splitlines()
-    header_index = next((i for i, line in enumerate(lines) if line.strip().startswith("Record Type")), -1)
-    if header_index == -1: return None
-    
-    decimal_sep = '.' if region_code == 'US' else ','
-    
-    df = pd.read_csv(io.StringIO('\n'.join(lines[header_index:])), sep='\t', decimal=decimal_sep)
-    df.columns = df.columns.str.strip()
-    
-    for col in ['Measured N', 'Measured E', 'Measured Elv']:
-        if col in df.columns: 
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    time_col = df['Local Time'].str.replace(',', '.', regex=False)
-    datetime_str = df['Date'] + ' ' + time_col
-    
-    if region_code == "US":
-        date_format = '%m/%d/%Y %H:%M:%S.%f'
-        fallback_format = '%d.%m.%Y %H:%M:%S.%f'
-    else:
-        date_format = '%d.%m.%Y %H:%M:%S.%f'
-        fallback_format = '%m/%d/%Y %H:%M:%S.%f'
-
-    df['timestamp'] = pd.to_datetime(datetime_str, format=date_format, errors='coerce')
-    df['timestamp'] = df['timestamp'].fillna(pd.to_datetime(datetime_str, format=fallback_format, errors='coerce'))
-    
-    return df.dropna(subset=['timestamp']).sort_values('timestamp')
-
+# --- Streamlit UI Setup ---
 st.set_page_config(page_title="SiteWords: Reporting Tool", layout="wide")
 
-st.sidebar.header('📋 SiteWords: Reporting Tool') 
+# Initialize Session State
+if 'app_mode' not in st.session_state:
+    st.session_state['app_mode'] = 'Dashboard'
+if 'report_data' not in st.session_state:
+    st.session_state['report_data'] = None
 
-map_container = st.sidebar.container() 
+# We use session state to track if files have been successfully uploaded and processed
+if 'files_loaded' not in st.session_state:
+    st.session_state['files_loaded'] = False
 
-st.sidebar.divider()
-region_code = st.sidebar.selectbox("Region Mode (Dates/Decimals)", ('EU', 'US'))
-uploaded_files = st.sidebar.file_uploader("Upload Log Files", type=['txt'], accept_multiple_files=True)
+# --- APP MODES ---
 
-tasklog_file = next((f for f in uploaded_files if 'tasklog' in f.name.lower()), None)
-record_file = next((f for f in uploaded_files if 'record' in f.name.lower()), None)
-
-if tasklog_file and record_file:
-    def decode_file(file):
-        content = file.getvalue()
-        try: return content.decode("utf-8-sig")
-        except UnicodeDecodeError: return content.decode("utf-16")
+def show_dashboard():
     
-    tasklog_string_data = decode_file(tasklog_file)
-    record_string_data = decode_file(record_file)
-    
-    with st.spinner('Parsing and combining all log data...'):
-        df_sessions = parse_task_log_sessions(tasklog_string_data, region_code)
-        df_points = parse_record_log(record_string_data, region_code)
-        df = pd.DataFrame()
-        if df_sessions is not None and df_points is not None:
-            df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
-        elif df_points is not None:
-            df = df_points
-            st.warning("Could not parse TaskLog file. Showing only Record data.")
-        else:
-            st.error("Failed to parse the Record log file. Please check the file format.")
+    # Check if files have already been processed
+    if not st.session_state['files_loaded']:
+        st.header('📋 SiteWords: Data Upload') 
+        st.divider()
+        st.info('To begin, select your Region and upload both TaskLog and Record files.')
+        
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            region_code = st.selectbox("Region Mode (Dates/Decimals)", ('EU', 'US'))
+        with col2:
+            uploaded_files = st.file_uploader("Upload Log Files", type=['txt'], accept_multiple_files=True)
 
-    if not df.empty:
-        st.caption(f'Found and processed {len(df)} measurement records. Region: **{region_code}**')
-        
-        df['lat'] = df['HA / Lat'].apply(parse_latlon_value) if 'HA / Lat' in df.columns else None
-        df['lon'] = df['VA / Long'].apply(parse_latlon_value) if 'VA / Long' in df.columns else None
-        
-        missing_coords = df['lat'].isnull()
-        if missing_coords.any() and 'Measured E' in df.columns and 'Measured N' in df.columns:
-            st.info("Attempting to convert Northing/Easting for some points...")
-            lat_converted, lon_converted = convert_ne_to_latlon(df[missing_coords], 'Measured E', 'Measured N')
-            df.loc[missing_coords, 'lat'] = lat_converted
-            df.loc[missing_coords, 'lon'] = lon_converted
+        tasklog_file = next((f for f in uploaded_files if 'tasklog' in f.name.lower()), None)
+        record_file = next((f for f in uploaded_files if 'record' in f.name.lower()), None)
 
-        st.subheader("Field Data Table")
-        
-        df_display = df.copy().dropna(axis=1, how='all')
-        df_display.insert(0, "Select", False)
-        
-        final_display_columns = [col for col in df_display.columns if col != 'Select']
-        
-        edited_df = st.data_editor(
-            df_display, 
-            key="data_editor", 
-            width='stretch', 
-            hide_index=True,
-            disabled=final_display_columns
-        )
-        
-        selected_rows = edited_df[edited_df.Select] 
-
-        map_data_columns = ['lat', 'lon']
-        tooltip_html = "<b>Lat:</b> {lat}<br/><b>Lon:</b> {lon}"
-        
-        if "Point Name" in df.columns:
-            map_data_columns.append("Point Name")
-            tooltip_html = "<b>Point Name:</b> {Point Name}<br/>" + tooltip_html
-        
-        map_data = df[map_data_columns].dropna(subset=['lat', 'lon'])
-
-        if not map_data.empty:
+        if tasklog_file and record_file:
+            def decode_file(file):
+                content = file.getvalue()
+                try: return content.decode("utf-8-sig")
+                except UnicodeDecodeError: return content.decode("utf-16")
             
-            first_point_df = map_data.iloc[[0]]
-            first_point_index = first_point_df.index[0]
+            tasklog_string_data = decode_file(tasklog_file)
+            record_string_data = decode_file(record_file)
             
-            view_state = pdk.ViewState(
-                latitude=first_point_df['lat'].iloc[0], 
-                longitude=first_point_df['lon'].iloc[0], 
-                zoom=15, 
-                pitch=0
+            with st.spinner('Parsing and joining logs...'):
+                df_sessions = parse_task_log_sessions(tasklog_string_data, region_code)
+                df_points = parse_record_log(record_string_data, region_code)
+                
+                # --- MERGING LOGIC ---
+                df = pd.DataFrame()
+                if df_sessions is not None and df_points is not None:
+                    df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
+                elif df_points is not None:
+                    df = df_points
+                    st.warning("No TaskLog. Showing Records only.")
+                else:
+                    st.error("Error parsing records.")
+                    return
+
+            if not df.empty:
+                # Coordinate Processing
+                df['lat'] = df['HA / Lat'].apply(parse_latlon_value) if 'HA / Lat' in df.columns else None
+                df['lon'] = df['VA / Long'].apply(parse_latlon_value) if 'VA / Long' in df.columns else None
+                
+                missing = df['lat'].isnull()
+                if missing.any() and 'Measured E' in df.columns:
+                    lc, lnc = convert_ne_to_latlon(df[missing], 'Measured E', 'Measured N')
+                    df.loc[missing, 'lat'] = lc
+                    df.loc[missing, 'lon'] = lnc
+                
+                # Store the processed dataframe in session state
+                st.session_state['processed_df'] = df
+                st.session_state['files_loaded'] = True
+                
+                # We need to rerun to hide the file uploader and show the data view
+                st.rerun()
+            return
+
+    # If files are loaded, we display the main dashboard (without the upload ui)
+    if st.session_state['files_loaded']:
+        
+        # Dashboard Header with Clear Button
+        head_col1, head_col2 = st.columns([4, 1])
+        with head_col1:
+            st.header('📋 SiteWords: Dashboard')
+        with head_col2:
+            st.write("") # small spacing
+            # Option to clear loaded files directly from the main view
+            if st.button("🗑️ Clear Loaded Files", width='stretch'):
+                st.session_state['files_loaded'] = False
+                st.session_state['processed_df'] = None
+                if 'dashboard_selection' in st.session_state:
+                    del st.session_state['dashboard_selection']
+                st.rerun()
+                
+        st.divider()
+            
+        df = st.session_state['processed_df']
+        
+        # Use columns to display table and map side-by-side perfectly
+        col_table, col_map = st.columns([1, 1])
+
+        with col_table:
+            # --- NATIVE DATAFRAME SELECTION ---
+            st.subheader("🗃️ Field Data Selection")
+            
+            # Clean dataframe for display
+            df_display = df.copy().dropna(axis=1, how='all')
+            
+            # Use native st.dataframe selection
+            event = st.dataframe(
+                df_display, 
+                key="dashboard_table", 
+                width='stretch',
+                height=600, # Increased height since it has more vertical space now
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="multi-row"
             )
             
-            selected_indices = selected_rows.index
-            selected_points_df = map_data.loc[selected_indices.difference([first_point_index])]
-            other_indices = map_data.index.difference(selected_indices).difference([first_point_index])
-            other_points_df = map_data.loc[other_indices]
+            # Extract selected row indices
+            selected_rows_indices = event.selection.rows
             
-            layers = [
-                pdk.Layer('ScatterplotLayer', data=other_points_df, get_position='[lon, lat]', get_fill_color='[0, 100, 255]', get_radius=5, radius_units='pixels', pickable=True),
-                pdk.Layer('ScatterplotLayer', data=first_point_df, get_position='[lon, lat]', get_fill_color='[255, 0, 0]', get_radius=8, radius_units='pixels', pickable=True)
-            ]
+            # Save to session state so map can update
+            st.session_state['dashboard_selection'] = selected_rows_indices
+            
+            # --- ACTION BUTTON ---
+            if not selected_rows_indices:
+                btn_text = "📄 Report All Data"
+                help_text = "No rows selected. Clicking this will use ALL data."
+                df_to_report = df_display
+            else:
+                btn_text = f"📄 Report Selection ({len(selected_rows_indices)} rows)"
+                help_text = "Create report from selected rows."
+                # Filter dataframe by selected indices using iloc
+                df_to_report = df_display.iloc[selected_rows_indices]
 
-            if not selected_points_df.empty:
-                layers.append(pdk.Layer(
-                    'ScatterplotLayer', data=selected_points_df, get_position='[lon, lat]', 
-                    get_fill_color='[0, 255, 0]', get_radius=8, radius_units='pixels'
-                ))
-                last_selected = selected_points_df.iloc[-1]
-                view_state.latitude = last_selected['lat']
-                view_state.longitude = last_selected['lon']
-                view_state.zoom = 17
+            if st.button(btn_text, type="primary", help=help_text, width='stretch'):
+                st.session_state['report_data'] = df_to_report
+                st.session_state['app_mode'] = 'Report'
+                st.rerun()
 
-            with map_container:
+        with col_map:
+            # --- MAP VIEW ---
+            st.subheader("📍 Site Map Overview")
+            map_data_cols = ['lat', 'lon']
+            tooltip_html = "<b>Lat:</b> {lat}<br/><b>Lon:</b> {lon}"
+            if "Point Name" in df.columns:
+                map_data_cols.append("Point Name")
+                tooltip_html = "<b>Point Name:</b> {Point Name}<br/>" + tooltip_html
+            
+            map_data = df[map_data_cols].dropna(subset=['lat', 'lon'])
+
+            if not map_data.empty:
+                first_pt = map_data.iloc[[0]]
+                view_state = pdk.ViewState(latitude=first_pt['lat'].iloc[0], longitude=first_pt['lon'].iloc[0], zoom=16, pitch=0)
+                
+                # Check for selected points in session state to highlight them on the map
+                selected_indices = st.session_state.get('dashboard_selection', [])
+                
+                if selected_indices:
+                    sel_idxs_pd = pd.Index(selected_indices)
+                    # Safe intersection to avoid out-of-bounds errors if df changes
+                    valid_sel_idxs = sel_idxs_pd.intersection(map_data.index)
+                    sel_pts = map_data.loc[valid_sel_idxs]
+                    other_pts = map_data.loc[map_data.index.difference(valid_sel_idxs).difference([first_pt.index[0]])]
+                else:
+                    sel_pts = pd.DataFrame(columns=map_data.columns)
+                    other_pts = map_data.loc[map_data.index.difference([first_pt.index[0]])]
+                
+                layers = [
+                    pdk.Layer('ScatterplotLayer', data=other_pts, get_position='[lon, lat]', get_fill_color='[0, 100, 255]', get_radius=5, radius_units='pixels', pickable=True),
+                    pdk.Layer('ScatterplotLayer', data=first_pt, get_position='[lon, lat]', get_fill_color='[255, 0, 0]', get_radius=8, radius_units='pixels', pickable=True)
+                ]
+                
+                if not sel_pts.empty:
+                    layers.append(pdk.Layer('ScatterplotLayer', data=sel_pts, get_position='[lon, lat]', get_fill_color='[0, 255, 0]', get_radius=8, radius_units='pixels'))
                 
                 carto_light_style = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
+                # We use height=600 to match the approximate height of the dataframe
+                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=carto_light_style, tooltip={"html": tooltip_html}), height=600)
+            else:
+                st.info("No coordinates found to display on map.")
 
-                st.pydeck_chart(pdk.Deck(
-                    layers=layers, 
-                    initial_view_state=view_state,
-                    map_style=carto_light_style,
-                    tooltip={"html": tooltip_html}
-                ))
-            
-        else:
-            with map_container:
-                st.info("No valid coordinates found to display on the map.")
-            
-    elif uploaded_files:
-        st.error("Could not process the uploaded file(s). Please check the file format.")
+def show_report_generator():
+    st.header("📄 Report Generator")
+    
+    if st.button("← Back to Dashboard"):
+        st.session_state['app_mode'] = 'Dashboard'
+        st.rerun()
         
-else:
-    st.header('📋 SiteWords: Reporting Tool') 
-    st.info('To begin, select your Region and upload both a TaskLog and a Record file using the sidebar.')
+    df_raw = st.session_state['report_data']
+    
+    # --- Visible Report Inputs ---
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Project Details")
+        def_proj = df_raw['Project'].iloc[0] if 'Project' in df_raw.columns else ""
+        def_wo = df_raw['Work Order'].iloc[0] if 'Work Order' in df_raw.columns else ""
+        
+        r_project = st.text_input("Project Name", value=def_proj)
+        r_wo = st.text_input("Work Order", value=def_wo)
+        r_client = st.text_input("Client Name", "Client XYZ")
+        
+    with c2:
+        st.subheader("Report Metadata")
+        r_company = st.text_input("Company Name", "My Surveying Co.")
+        r_date = st.date_input("Report Date", datetime.now())
+        r_time = st.time_input("Report Time", datetime.now())
+    
+    st.divider()
+    
+    # --- Column Selection (Grid Layout in Expander) ---
+    all_columns = df_raw.columns.tolist()
+    preferred_cols = ['Sub Type', 'Point Name', 'Measured E', 'Measured N', 'Measured Elv', 'Precision H', 'Precision V']
+    
+    selected_columns = []
+    initial_selection = [c for c in preferred_cols if c in all_columns]
+    
+    with st.expander("⚙️ Data Columns Selection (Click to Open/Close)", expanded=False):
+        st.caption("Select columns to include in the exported report.")
+        
+        cols_grid = st.columns(5)
+        
+        for i, col_name in enumerate(all_columns):
+            is_preferred = col_name in preferred_cols
+            if cols_grid[i % 5].checkbox(col_name, value=is_preferred, key=f"chk_{i}"):
+                selected_columns.append(col_name)
+    
+    # --- Filter Data ---
+    if not selected_columns:
+        st.warning("No columns selected. Export will contain default columns.")
+        cols_to_include = initial_selection
+    else:
+        cols_to_include = [c for c in all_columns if c in selected_columns]
+        
+    df_report = df_raw[cols_to_include]
+
+    # --- Data Preview (Main View) ---
+    st.subheader(f"Report Preview ({len(df_report)} rows)")
+    st.dataframe(df_report, width='stretch', hide_index=True)
+    
+    # Prepare data for export
+    header_info = {
+        "project": r_project, "wo": r_wo, "client": r_client,
+        "company": r_company, "date": str(r_date), "time": str(r_time)
+    }
+    
+    st.divider()
+    st.subheader("Export Options")
+    
+    # Sanitize project name
+    clean_project_name = re.sub(r'[^\w\-_]', '_', r_project) if r_project else "Project"
+    
+    c1, c2, c3, c4 = st.columns(4)
+    
+    # PDF Button
+    with c1:
+        pdf_bytes = create_pdf(df_report, header_info)
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name=f"Report_{clean_project_name}.pdf",
+            mime="application/pdf",
+            type="primary",
+            width='stretch',
+            key="btn_download_pdf"
+        )
+        
+    # Excel Button
+    with c2:
+        excel_bytes = to_excel(df_report, header_info)
+        st.download_button(
+            label="Download Excel",
+            data=excel_bytes,
+            file_name=f"Report_{clean_project_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width='stretch',
+            key="btn_download_excel"
+        )
+        
+    # CSV Button
+    with c3:
+        csv_bytes = to_csv(df_report)
+        st.download_button(
+            label="Download CSV",
+            data=csv_bytes,
+            file_name=f"Report_{clean_project_name}.csv",
+            mime="text/csv",
+            width='stretch',
+            key="btn_download_csv"
+        )
+        
+    # HTML Button
+    with c4:
+        html_bytes = to_html(df_report, header_info)
+        st.download_button(
+            label="Download HTML",
+            data=html_bytes,
+            file_name=f"Report_{clean_project_name}.html",
+            mime="text/html",
+            width='stretch',
+            key="btn_download_html"
+        )
+
+# --- Main Router ---
+if st.session_state['app_mode'] == 'Dashboard':
+    show_dashboard()
+elif st.session_state['app_mode'] == 'Report':
+    show_report_generator()
