@@ -7,10 +7,113 @@ from pyproj import Transformer, CRS
 from fpdf import FPDF
 from datetime import datetime
 
-# --- Yardımcı Fonksiyonlar ---
+# --- UI Language Dictionary ---
+UI_TEXT = {
+    'en': {
+        'upload_header': '📋 SiteWords: Data Upload',
+        'upload_info': 'To begin, select your Region and upload both TaskLog and Record files.',
+        'region_mode': 'Region Mode (Dates/Decimals)',
+        'upload_files': 'Upload Log Files',
+        'parsing_spinner': 'Parsing and joining logs...',
+        'tasklog_missing': 'No TaskLog mapped. Showing Records only.',
+        'parse_error': 'Error parsing records. Ensure valid TaskLog and Record files.',
+        'dash_header': '📋 SiteWords: Dashboard',
+        'clear_files': '🗑️ Clear Loaded Files',
+        'field_data_sel': '🗃️ Field Data Selection',
+        'sel_caption': 'Select rows to include in the report. If none are selected, all rows will be exported.',
+        'report_all': '📄 Report All Data',
+        'report_all_help': 'No rows selected. Clicking this will use ALL data.',
+        'report_sel_base': '📄 Report Selection',
+        'report_sel_help': 'Create report from selected rows.',
+        'map_header': '📍 Site Map Overview',
+        'map_pt_name': 'Point Name',
+        'map_no_coord': 'No coordinates found to display on map.',
+        'rep_header': '📄 Report Generator',
+        'back_dash': '← Back to Dashboard',
+        'proj_details': 'Project Details',
+        'proj_name': 'Project Name',
+        'work_order': 'Work Order',
+        'client_name': 'Client Name',
+        'rep_meta': 'Report Metadata',
+        'company_name': 'Company Name',
+        'rep_date': 'Report Date',
+        'rep_time': 'Report Time',
+        'col_sel_expander': '⚙️ Data Columns Selection (Click to Open/Close)',
+        'col_sel_caption': 'Select columns to include in the exported report.',
+        'col_warning': 'No columns selected. Export will contain default columns.',
+        'rep_preview': 'Report Preview',
+        'rows': 'rows',
+        'export_opts': 'Export Options',
+        'dl_pdf': 'Download PDF',
+        'dl_excel': 'Download Excel',
+        'dl_csv': 'Download CSV',
+        'dl_html': 'Download HTML',
+        'pdf_project': 'Project:',
+        'pdf_wo': 'Work Order:',
+        'pdf_client': 'Client:',
+        'pdf_company': 'Company:',
+        'pdf_datetime': 'Date/Time:',
+        'pdf_date': 'Date:',
+        'pdf_time': 'Time:',
+        'pdf_page': 'Page',
+        'pdf_title': 'SiteWords Report'
+    },
+    'de': {
+        'upload_header': '📋 SiteWords: Daten-Upload',
+        'upload_info': 'Wählen Sie Ihre Region und laden Sie TaskLog- und Record-Dateien hoch, um zu beginnen.',
+        'region_mode': 'Region Modus (Datum/Dezimal)',
+        'upload_files': 'Log-Dateien hochladen',
+        'parsing_spinner': 'Logs werden analysiert und verknüpft...',
+        'tasklog_missing': 'Kein TaskLog zugeordnet. Es werden nur Records angezeigt.',
+        'parse_error': 'Fehler beim Lesen der Dateien. Stellen Sie sicher, dass TaskLog und Record gültig sind.',
+        'dash_header': '📋 SiteWords: Dashboard',
+        'clear_files': '🗑️ Geladene Dateien löschen',
+        'field_data_sel': '🗃️ Felddaten-Auswahl',
+        'sel_caption': 'Wählen Sie die Zeilen für den Bericht aus. Ohne Auswahl werden alle Zeilen exportiert.',
+        'report_all': '📄 Alle Daten berichten',
+        'report_all_help': 'Keine Zeilen gewählt. ALLE Daten werden verwendet.',
+        'report_sel_base': '📄 Auswahl berichten',
+        'report_sel_help': 'Bericht aus ausgewählten Zeilen erstellen.',
+        'map_header': '📍 Standortkarte Übersicht',
+        'map_pt_name': 'Punktname',
+        'map_no_coord': 'Keine Koordinaten für die Karte gefunden.',
+        'rep_header': '📄 Berichtsgenerator',
+        'back_dash': '← Zurück zum Dashboard',
+        'proj_details': 'Projektdetails',
+        'proj_name': 'Projektname',
+        'work_order': 'Arbeitsauftrag',
+        'client_name': 'Kundenname',
+        'rep_meta': 'Berichts-Metadaten',
+        'company_name': 'Firmenname',
+        'rep_date': 'Berichtsdatum',
+        'rep_time': 'Berichtszeit',
+        'col_sel_expander': '⚙️ Datenspalten-Auswahl (Klicken zum Öffnen/Schließen)',
+        'col_sel_caption': 'Wählen Sie die Spalten für den exportierten Bericht.',
+        'col_warning': 'Keine Spalten gewählt. Standardspalten werden exportiert.',
+        'rep_preview': 'Berichtsvorschau',
+        'rows': 'Zeilen',
+        'export_opts': 'Exportoptionen',
+        'dl_pdf': 'PDF herunterladen',
+        'dl_excel': 'Excel herunterladen',
+        'dl_csv': 'CSV herunterladen',
+        'dl_html': 'HTML herunterladen',
+        'pdf_project': 'Projekt:',
+        'pdf_wo': 'Arbeitsauftrag:',
+        'pdf_client': 'Kunde:',
+        'pdf_company': 'Firma:',
+        'pdf_datetime': 'Datum/Zeit:',
+        'pdf_date': 'Datum:',
+        'pdf_time': 'Zeit:',
+        'pdf_page': 'Seite',
+        'pdf_title': 'SiteWords Bericht'
+    }
+}
 
-def to_excel(df, header_info):
-    """Excel dosyası oluşturur ve biçimlendirir."""
+# --- Helper Functions ---
+
+def to_excel(df, header_info, lang):
+    """Generates and formats an Excel file."""
+    ui = UI_TEXT[lang]
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         start_row = 8 
@@ -20,29 +123,29 @@ def to_excel(df, header_info):
         workbook = writer.book
         worksheet = writer.sheets['Report']
         
-        # --- Formatlar ---
+        # --- Formats ---
         title_format = workbook.add_format({'bold': True, 'font_size': 16, 'font_color': '#2c3e50', 'align': 'left'})
         label_format = workbook.add_format({'bold': True, 'font_color': '#34495e', 'align': 'left'})
         text_format = workbook.add_format({'font_color': '#000000', 'align': 'left'})
         header_format = workbook.add_format({'bold': True, 'text_wrap': True, 'valign': 'top', 'fg_color': '#2980b9', 'font_color': 'white', 'border': 1})
         
-        # --- Üst Bilgileri Yaz ---
-        worksheet.write(0, 0, "📑 SiteWords Report", title_format)
+        # --- Write Metadata ---
+        worksheet.write(0, 0, f"📑 {ui['pdf_title']}", title_format)
         
         metadata = [
-            ("Project:", header_info['project']),
-            ("Work Order:", header_info['wo']),
-            ("Client:", header_info['client']),
-            ("Company:", header_info['company']),
-            ("Date:", header_info['date']),
-            ("Time:", header_info['time'])
+            (ui['pdf_project'], header_info['project']),
+            (ui['pdf_wo'], header_info['wo']),
+            (ui['pdf_client'], header_info['client']),
+            (ui['pdf_company'], header_info['company']),
+            (ui['pdf_date'], header_info['date']),
+            (ui['pdf_time'], header_info['time'])
         ]
         
         for i, (label, value) in enumerate(metadata):
             worksheet.write(2 + i, 0, label, label_format)
             worksheet.write(2 + i, 1, value, text_format)
 
-        # --- Tablo Başlığını Biçimlendir ---
+        # --- Format Table Header ---
         for col_num, value in enumerate(df.columns.values):
             worksheet.write(start_row, col_num, value, header_format)
             worksheet.set_column(col_num, col_num, 15)
@@ -50,11 +153,12 @@ def to_excel(df, header_info):
     return output.getvalue()
 
 def to_csv(df):
-    """CSV dosyası oluşturur."""
+    """Generates a CSV file."""
     return df.to_csv(index=False).encode('utf-8')
 
-def to_html(df, header_info):
-    """Stilize edilmiş HTML raporu oluşturur."""
+def to_html(df, header_info, lang):
+    """Generates a stylized HTML report."""
+    ui = UI_TEXT[lang]
     
     html = f"""
     <html>
@@ -91,15 +195,15 @@ def to_html(df, header_info):
     </head>
     <body>
     <div class="header-container">
-        <h1>📑 SiteWords Report</h1>
+        <h1>📑 {ui['pdf_title']}</h1>
     </div>
     
     <div class="meta-container">
-        <div class="meta-row"><span class="meta-icon">🏗️</span><span class="meta-label">Project:</span><span class="meta-value">{header_info['project']}</span></div>
-        <div class="meta-row"><span class="meta-icon">📋</span><span class="meta-label">Work Order:</span><span class="meta-value">{header_info['wo']}</span></div>
-        <div class="meta-row"><span class="meta-icon">👤</span><span class="meta-label">Client:</span><span class="meta-value">{header_info['client']}</span></div>
-        <div class="meta-row"><span class="meta-icon">🏢</span><span class="meta-label">Company:</span><span class="meta-value">{header_info['company']}</span></div>
-        <div class="meta-row"><span class="meta-icon">📅</span><span class="meta-label">Date/Time:</span><span class="meta-value">{header_info['date']} | {header_info['time']}</span></div>
+        <div class="meta-row"><span class="meta-icon">🏗️</span><span class="meta-label">{ui['pdf_project']}</span><span class="meta-value">{header_info['project']}</span></div>
+        <div class="meta-row"><span class="meta-icon">📋</span><span class="meta-label">{ui['pdf_wo']}</span><span class="meta-value">{header_info['wo']}</span></div>
+        <div class="meta-row"><span class="meta-icon">👤</span><span class="meta-label">{ui['pdf_client']}</span><span class="meta-value">{header_info['client']}</span></div>
+        <div class="meta-row"><span class="meta-icon">🏢</span><span class="meta-label">{ui['pdf_company']}</span><span class="meta-value">{header_info['company']}</span></div>
+        <div class="meta-row"><span class="meta-icon">📅</span><span class="meta-label">{ui['pdf_datetime']}</span><span class="meta-value">{header_info['date']} | {header_info['time']}</span></div>
     </div>
     
     {df.to_html(index=False)}
@@ -108,26 +212,29 @@ def to_html(df, header_info):
     """
     return html.encode('utf-8')
 
-def create_pdf(df, header_info):
-    """Metin kaydırma ve dinamik düzen ile PDF raporu oluşturur."""
+def create_pdf(df, header_info, lang):
+    """Generates a PDF report with text wrapping and dynamic layouts."""
+    ui = UI_TEXT[lang]
     
     class PDF(FPDF):
         def header(self):
             self.set_font('Arial', 'B', 16)
             self.set_text_color(44, 62, 80)
-            self.cell(0, 10, 'SiteWords Report', 0, 1, 'L') 
+            title_text = ui['pdf_title'].encode('latin-1', 'replace').decode('latin-1')
+            self.cell(0, 10, title_text, 0, 1, 'L') 
             self.ln(5)
             
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
             self.set_text_color(128)
-            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+            page_text = f"{ui['pdf_page']} {self.page_no()}"
+            self.cell(0, 10, page_text, 0, 0, 'C')
 
     pdf = PDF(orientation='L', unit='mm', format='A4') 
     pdf.add_page()
     
-    # --- Üst Bilgi Bölümü ---
+    # --- Metadata Section ---
     pdf.set_font('Arial', 'B', 12)
     pdf.set_text_color(0)
     
@@ -136,7 +243,9 @@ def create_pdf(df, header_info):
     
     start_y = 30
     pdf.set_xy(15, start_y)
-    pdf.cell(30, 8, "Project:", 0, 0, 'L')
+    
+    lbl_project = ui['pdf_project'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(30, 8, lbl_project, 0, 0, 'L')
     pdf.set_font('Arial', '', 12)
     
     safe_project = header_info['project'].encode('latin-1', 'replace').decode('latin-1')
@@ -144,27 +253,30 @@ def create_pdf(df, header_info):
     
     pdf.set_x(15)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(30, 6, "Work Order:", 0, 0, 'L')
+    lbl_wo = ui['pdf_wo'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(30, 6, lbl_wo, 0, 0, 'L')
     pdf.set_font('Arial', '', 10)
     safe_wo = header_info['wo'].encode('latin-1', 'replace').decode('latin-1')
     pdf.cell(100, 6, safe_wo, 0, 1, 'L')
     
     pdf.set_x(15)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(30, 6, "Client:", 0, 0, 'L')
+    lbl_client = ui['pdf_client'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(30, 6, lbl_client, 0, 0, 'L')
     pdf.set_font('Arial', '', 10)
     safe_client = header_info['client'].encode('latin-1', 'replace').decode('latin-1')
     pdf.cell(100, 6, safe_client, 0, 1, 'L')
     
     pdf.set_x(15)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(30, 6, "Date/Time:", 0, 0, 'L')
+    lbl_dt = ui['pdf_datetime'].encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(30, 6, lbl_dt, 0, 0, 'L')
     pdf.set_font('Arial', '', 10)
     pdf.cell(100, 6, f"{header_info['date']} | {header_info['time']}", 0, 1, 'L')
     
     pdf.ln(10)
 
-    # --- Tablo Ayarları ---
+    # --- Table Settings ---
     num_cols = len(df.columns)
     page_width = 277
     col_width = page_width / num_cols if num_cols > 0 else page_width
@@ -175,7 +287,7 @@ def create_pdf(df, header_info):
     
     line_height = pdf.font_size * 2
     
-    # --- Tablo Başlığı ---
+    # --- Table Header ---
     pdf.set_font('Arial', 'B', font_size)
     pdf.set_fill_color(41, 128, 185)
     pdf.set_text_color(255)
@@ -185,7 +297,7 @@ def create_pdf(df, header_info):
         pdf.cell(col_width, line_height, header_text[:20], border=1, align='C', fill=True)
     pdf.ln(line_height)
     
-    # --- Tablo Satırları ---
+    # --- Table Rows ---
     pdf.set_font('Arial', '', font_size)
     pdf.set_text_color(0)
     
@@ -225,7 +337,7 @@ def create_pdf(df, header_info):
         return output.encode('latin-1')
     return output
 
-# --- Veri Ayrıştırma Fonksiyonları (İngilizce/Almanca Destekli) ---
+# --- Data Parsing Functions (EN/DE Supported) ---
 @st.cache_data(show_spinner=False)
 def convert_ne_to_latlon(df, easting_col, northing_col, source_epsg="epsg:32632"):
     try:
@@ -320,32 +432,36 @@ def parse_latlon_value(coord_str):
         try: return float(coord_str)
         except (ValueError, TypeError): return None
 
-# --- Streamlit UI Ayarları ---
-st.set_page_config(page_title="SiteWords: Raporlama Aracı", layout="wide")
+# --- Streamlit UI Setup ---
+st.set_page_config(page_title="SiteWords", layout="wide")
 
-# Session State Başlatma
+# Initialize Session State
 if 'app_mode' not in st.session_state:
     st.session_state['app_mode'] = 'Dashboard'
 if 'report_data' not in st.session_state:
     st.session_state['report_data'] = None
 if 'files_loaded' not in st.session_state:
     st.session_state['files_loaded'] = False
+if 'lang' not in st.session_state:
+    st.session_state['lang'] = 'en'
 
-# --- UYGULAMA MODLARI ---
+# --- APP MODES ---
 
 def show_dashboard():
+    lang = st.session_state['lang']
+    ui = UI_TEXT[lang]
     
-    # Dosyalar henüz yüklenmediyse Upload ekranını göster
+    # Show Upload screen if files not loaded yet
     if not st.session_state['files_loaded']:
-        st.header('📋 SiteWords: Veri Yükleme') 
+        st.header(ui['upload_header']) 
         st.divider()
-        st.info('Başlamak için Bölge (Region) seçin ve TaskLog ile Record dosyalarını yükleyin.')
+        st.info(ui['upload_info'])
         
         col1, col2 = st.columns([1, 3])
         with col1:
-            region_code = st.selectbox("Bölge Modu (Tarih/Ondalık)", ('EU', 'US'))
+            region_code = st.selectbox(ui['region_mode'], ('EU', 'US'))
         with col2:
-            uploaded_files = st.file_uploader("Log Dosyalarını Yükle", type=['txt'], accept_multiple_files=True)
+            uploaded_files = st.file_uploader(ui['upload_files'], type=['txt'], accept_multiple_files=True)
 
         tasklog_file = next((f for f in uploaded_files if 'tasklog' in f.name.lower()), None)
         record_file = next((f for f in uploaded_files if 'record' in f.name.lower()), None)
@@ -359,23 +475,29 @@ def show_dashboard():
             tasklog_string_data = decode_file(tasklog_file)
             record_string_data = decode_file(record_file)
             
-            with st.spinner('Loglar ayrıştırılıyor ve birleştiriliyor...'):
+            with st.spinner(ui['parsing_spinner']):
                 df_sessions = parse_task_log_sessions(tasklog_string_data, region_code)
                 df_points = parse_record_log(record_string_data, region_code)
                 
-                # --- BİRLEŞTİRME MANTIĞI ---
+                # --- MERGING LOGIC ---
                 df = pd.DataFrame()
                 if df_sessions is not None and df_points is not None:
                     df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
                 elif df_points is not None:
                     df = df_points
-                    st.warning("TaskLog eşleşmedi. Sadece Record (Kayıt) verileri gösteriliyor.")
+                    st.warning(ui['tasklog_missing'])
                 else:
-                    st.error("Kayıtları okuma hatası. Geçerli TaskLog ve Record dosyaları yüklediğinizden emin olun.")
+                    st.error(ui['parse_error'])
                     return
 
             if not df.empty:
-                # Koordinat İşleme (Çoklu Dil)
+                # Determine UI Language based on Column Headers
+                if 'Gemess. Rechtswert' in df.columns or 'Datensatztyp' in df.columns:
+                    st.session_state['lang'] = 'de'
+                else:
+                    st.session_state['lang'] = 'en'
+                    
+                # Coordinate Processing (Multi-Language)
                 lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
                 lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
                 
@@ -391,21 +513,24 @@ def show_dashboard():
                         df.loc[missing, 'lat'] = lc
                         df.loc[missing, 'lon'] = lnc
                 
-                # İşlenmiş veriyi kaydet
+                # Save processed data
                 st.session_state['processed_df'] = df
                 st.session_state['files_loaded'] = True
                 
                 st.rerun()
             return
 
-    # Dosyalar yüklendiyse Ana Dashboard ekranını göster
+    # Show Main Dashboard if files loaded
     if st.session_state['files_loaded']:
+        lang = st.session_state['lang']
+        ui = UI_TEXT[lang]
+        
         head_col1, head_col2 = st.columns([4, 1])
         with head_col1:
-            st.header('📋 SiteWords: Dashboard')
+            st.header(ui['dash_header'])
         with head_col2:
             st.write("") 
-            if st.button("🗑️ Yüklenen Dosyaları Temizle", width='stretch'):
+            if st.button(ui['clear_files'], width='stretch'):
                 st.session_state['files_loaded'] = False
                 st.session_state['processed_df'] = None
                 if 'dashboard_selection' in st.session_state:
@@ -419,8 +544,8 @@ def show_dashboard():
         col_table, col_map = st.columns([1, 1])
 
         with col_table:
-            st.subheader("🗃️ Saha Verisi Seçimi")
-            st.caption("Raporlanacak satırları seçin. Hiçbir seçim yapılmazsa tüm satırlar dışa aktarılır.")
+            st.subheader(ui['field_data_sel'])
+            st.caption(ui['sel_caption'])
             
             df_display = df.copy().dropna(axis=1, how='all')
             
@@ -438,12 +563,12 @@ def show_dashboard():
             st.session_state['dashboard_selection'] = selected_rows_indices
             
             if not selected_rows_indices:
-                btn_text = "📄 Tüm Veriyi Raporla"
-                help_text = "Satır seçilmedi. Tıklanırsa TÜM veri kullanılır."
+                btn_text = ui['report_all']
+                help_text = ui['report_all_help']
                 df_to_report = df_display
             else:
-                btn_text = f"📄 Seçimi Raporla ({len(selected_rows_indices)} satır)"
-                help_text = "Seçilen satırlardan rapor oluştur."
+                btn_text = f"{ui['report_sel_base']} ({len(selected_rows_indices)} {ui['rows']})"
+                help_text = ui['report_sel_help']
                 df_to_report = df_display.iloc[selected_rows_indices]
 
             if st.button(btn_text, type="primary", help=help_text, width='stretch'):
@@ -452,15 +577,15 @@ def show_dashboard():
                 st.rerun()
 
         with col_map:
-            st.subheader("📍 Saha Haritası Görünümü")
+            st.subheader(ui['map_header'])
             map_data_cols = ['lat', 'lon']
             
-            # Dinamik nokta adı tespiti
+            # Dynamic point name detection
             pt_col = "Point Name" if "Point Name" in df.columns else "Punktname"
             tooltip_html = "<b>Lat:</b> {lat}<br/><b>Lon:</b> {lon}"
             if pt_col in df.columns:
                 map_data_cols.append(pt_col)
-                tooltip_html = f"<b>Point Name:</b> {{{pt_col}}}<br/>" + tooltip_html
+                tooltip_html = f"<b>{ui['map_pt_name']}:</b> {{{pt_col}}}<br/>" + tooltip_html
             
             map_data = df[map_data_cols].dropna(subset=['lat', 'lon'])
 
@@ -490,12 +615,15 @@ def show_dashboard():
                 carto_light_style = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
                 st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=carto_light_style, tooltip={"html": tooltip_html}), height=600)
             else:
-                st.info("Haritada gösterilecek koordinat bulunamadı.")
+                st.info(ui['map_no_coord'])
 
 def show_report_generator():
-    st.header("📄 Rapor Oluşturucu")
+    lang = st.session_state['lang']
+    ui = UI_TEXT[lang]
     
-    if st.button("← Dashboard'a Dön"):
+    st.header(ui['rep_header'])
+    
+    if st.button(ui['back_dash']):
         st.session_state['app_mode'] = 'Dashboard'
         st.rerun()
         
@@ -503,23 +631,23 @@ def show_report_generator():
     
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Proje Detayları")
+        st.subheader(ui['proj_details'])
         def_proj = df_raw['Project'].iloc[0] if 'Project' in df_raw.columns else ""
         def_wo = df_raw['Work Order'].iloc[0] if 'Work Order' in df_raw.columns else ""
         
-        r_project = st.text_input("Proje Adı", value=def_proj)
-        r_wo = st.text_input("İş Emri", value=def_wo)
-        r_client = st.text_input("Müşteri Adı", "Client XYZ")
+        r_project = st.text_input(ui['proj_name'], value=def_proj)
+        r_wo = st.text_input(ui['work_order'], value=def_wo)
+        r_client = st.text_input(ui['client_name'], "Client XYZ")
         
     with c2:
-        st.subheader("Rapor Metadatası")
-        r_company = st.text_input("Şirket Adı", "My Surveying Co.")
-        r_date = st.date_input("Rapor Tarihi", datetime.now())
-        r_time = st.time_input("Rapor Saati", datetime.now())
+        st.subheader(ui['rep_meta'])
+        r_company = st.text_input(ui['company_name'], "My Surveying Co.")
+        r_date = st.date_input(ui['rep_date'], datetime.now())
+        r_time = st.time_input(ui['rep_time'], datetime.now())
     
     st.divider()
     
-    # --- Sütun Seçimi (Çoklu Dil Destekli) ---
+    # --- Column Selection (Multi-Language Supported) ---
     all_columns = df_raw.columns.tolist()
     
     preferred_cols = [
@@ -535,8 +663,8 @@ def show_report_generator():
     selected_columns = []
     initial_selection = [c for c in preferred_cols if c in all_columns]
     
-    with st.expander("⚙️ Veri Sütunlarını Seç (Aç/Kapat)", expanded=False):
-        st.caption("Dışa aktarılacak raporda yer alacak sütunları seçin.")
+    with st.expander(ui['col_sel_expander'], expanded=False):
+        st.caption(ui['col_sel_caption'])
         
         cols_grid = st.columns(5)
         
@@ -546,14 +674,14 @@ def show_report_generator():
                 selected_columns.append(col_name)
     
     if not selected_columns:
-        st.warning("Hiçbir sütun seçilmedi. Varsayılan sütunlar aktarılacak.")
+        st.warning(ui['col_warning'])
         cols_to_include = initial_selection
     else:
         cols_to_include = [c for c in all_columns if c in selected_columns]
         
     df_report = df_raw[cols_to_include]
 
-    st.subheader(f"Rapor Önizleme ({len(df_report)} satır)")
+    st.subheader(f"{ui['rep_preview']} ({len(df_report)} {ui['rows']})")
     st.dataframe(df_report, width='stretch', hide_index=True)
     
     header_info = {
@@ -562,16 +690,16 @@ def show_report_generator():
     }
     
     st.divider()
-    st.subheader("Dışa Aktarma Seçenekleri")
+    st.subheader(ui['export_opts'])
     
     clean_project_name = re.sub(r'[^\w\-_]', '_', r_project) if r_project else "Project"
     
     c1, c2, c3, c4 = st.columns(4)
     
     with c1:
-        pdf_bytes = create_pdf(df_report, header_info)
+        pdf_bytes = create_pdf(df_report, header_info, lang)
         st.download_button(
-            label="PDF İndir",
+            label=ui['dl_pdf'],
             data=pdf_bytes,
             file_name=f"Report_{clean_project_name}.pdf",
             mime="application/pdf",
@@ -581,9 +709,9 @@ def show_report_generator():
         )
         
     with c2:
-        excel_bytes = to_excel(df_report, header_info)
+        excel_bytes = to_excel(df_report, header_info, lang)
         st.download_button(
-            label="Excel İndir",
+            label=ui['dl_excel'],
             data=excel_bytes,
             file_name=f"Report_{clean_project_name}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -594,7 +722,7 @@ def show_report_generator():
     with c3:
         csv_bytes = to_csv(df_report)
         st.download_button(
-            label="CSV İndir",
+            label=ui['dl_csv'],
             data=csv_bytes,
             file_name=f"Report_{clean_project_name}.csv",
             mime="text/csv",
@@ -603,9 +731,9 @@ def show_report_generator():
         )
         
     with c4:
-        html_bytes = to_html(df_report, header_info)
+        html_bytes = to_html(df_report, header_info, lang)
         st.download_button(
-            label="HTML İndir",
+            label=ui['dl_html'],
             data=html_bytes,
             file_name=f"Report_{clean_project_name}.html",
             mime="text/html",
@@ -613,7 +741,7 @@ def show_report_generator():
             key="btn_download_html"
         )
 
-# --- Ana Yönlendirici ---
+# --- APP MODES ---
 if st.session_state['app_mode'] == 'Dashboard':
     show_dashboard()
 elif st.session_state['app_mode'] == 'Report':
