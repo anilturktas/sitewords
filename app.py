@@ -61,7 +61,7 @@ UI_TEXT = {
     'de': {
         'upload_header': '📋 SiteWords: Daten-Upload',
         'upload_info': 'Wählen Sie Ihre Region und laden Sie TaskLog- und Record-Dateien hoch, um zu beginnen.',
-        'region_mode': 'Region Modus (Datum/Dezimal)',
+        'region_mode': 'Region Modus',
         'upload_files': 'Log-Dateien hochladen',
         'parsing_spinner': 'Logs werden analysiert und verknüpft...',
         'tasklog_missing': 'Kein TaskLog zugeordnet. Es werden nur Records angezeigt.',
@@ -347,7 +347,15 @@ def convert_ne_to_latlon(df, easting_col, northing_col, source_epsg="epsg:32632"
         valid_data = df.loc[pd.to_numeric(df[easting_col], errors='coerce').notna() & 
                             pd.to_numeric(df[northing_col], errors='coerce').notna()]
         if valid_data.empty: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
-        lon, lat = transformer.transform(valid_data[easting_col].values, valid_data[northing_col].values)
+        
+        e_vals = valid_data[easting_col].values.astype(float)
+        n_vals = valid_data[northing_col].values.astype(float)
+        
+        # Handle 8-digit UTM Easting (e.g., 32684930 -> 684930) commonly used in Germany
+        if len(e_vals) > 0 and e_vals.mean() > 30000000:
+            e_vals = e_vals % 10000000
+            
+        lon, lat = transformer.transform(e_vals, n_vals)
         return pd.Series(lat, index=valid_data.index), pd.Series(lon, index=valid_data.index)
     except Exception: return pd.Series(None, index=df.index), pd.Series(None, index=df.index)
 
@@ -419,8 +427,11 @@ def parse_record_log(file_content, region_code):
     return None
 
 def parse_latlon_value(coord_str):
-    if not isinstance(coord_str, str): return None
-    coord_str = coord_str.strip().replace(',', '.')
+    if pd.isna(coord_str): return None
+    # Fix for EU mode: if pandas already parsed it as float, return it directly
+    if isinstance(coord_str, (int, float)): return float(coord_str)
+    
+    coord_str = str(coord_str).strip().replace(',', '.')
     if '°' in coord_str or "'" in coord_str or '"' in coord_str:
         match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])', coord_str)
         if not match: return None
@@ -444,6 +455,12 @@ if 'files_loaded' not in st.session_state:
     st.session_state['files_loaded'] = False
 if 'lang' not in st.session_state:
     st.session_state['lang'] = 'en'
+if 'raw_tasklog' not in st.session_state:
+    st.session_state['raw_tasklog'] = None
+if 'raw_record' not in st.session_state:
+    st.session_state['raw_record'] = None
+if 'region_code' not in st.session_state:
+    st.session_state['region_code'] = 'EU'
 
 # --- APP MODES ---
 
@@ -459,7 +476,7 @@ def show_dashboard():
         
         col1, col2 = st.columns([1, 3])
         with col1:
-            region_code = st.selectbox(ui['region_mode'], ('EU', 'US'))
+            region_code = st.selectbox(ui['region_mode'], ('EU', 'US'), index=0 if st.session_state['region_code'] == 'EU' else 1)
         with col2:
             uploaded_files = st.file_uploader(ui['upload_files'], type=['txt'], accept_multiple_files=True)
 
@@ -474,6 +491,10 @@ def show_dashboard():
             
             tasklog_string_data = decode_file(tasklog_file)
             record_string_data = decode_file(record_file)
+            
+            st.session_state['raw_tasklog'] = tasklog_string_data
+            st.session_state['raw_record'] = record_string_data
+            st.session_state['region_code'] = region_code
             
             with st.spinner(ui['parsing_spinner']):
                 df_sessions = parse_task_log_sessions(tasklog_string_data, region_code)
@@ -525,14 +546,50 @@ def show_dashboard():
         lang = st.session_state['lang']
         ui = UI_TEXT[lang]
         
-        head_col1, head_col2 = st.columns([4, 1])
+        head_col1, head_col2, head_col3 = st.columns([6, 2, 2])
         with head_col1:
             st.header(ui['dash_header'])
         with head_col2:
-            st.write("") 
+            # Region toggle in active dashboard
+            new_region = st.selectbox(ui['region_mode'], ('EU', 'US'), index=0 if st.session_state['region_code'] == 'EU' else 1, label_visibility="collapsed")
+            if new_region != st.session_state['region_code']:
+                st.session_state['region_code'] = new_region
+                with st.spinner(ui['parsing_spinner']):
+                    df_sessions = parse_task_log_sessions(st.session_state['raw_tasklog'], new_region)
+                    df_points = parse_record_log(st.session_state['raw_record'], new_region)
+                    
+                    df = pd.DataFrame()
+                    if df_sessions is not None and df_points is not None:
+                        df = pd.merge_asof(df_points, df_sessions, on='timestamp', direction='backward')
+                    elif df_points is not None:
+                        df = df_points
+                    
+                    if not df.empty:
+                        lat_col = 'HA / Lat' if 'HA / Lat' in df.columns else 'Hz / Breite'
+                        lon_col = 'VA / Long' if 'VA / Long' in df.columns else 'V / Länge'
+                        
+                        df['lat'] = df[lat_col].apply(parse_latlon_value) if lat_col in df.columns else None
+                        df['lon'] = df[lon_col].apply(parse_latlon_value) if lon_col in df.columns else None
+                        
+                        missing = df['lat'].isnull()
+                        if missing.any():
+                            e_col = 'Measured E' if 'Measured E' in df.columns else 'Gemess. Rechtswert'
+                            n_col = 'Measured N' if 'Measured N' in df.columns else 'Gemess. Hochwert'
+                            if e_col in df.columns and n_col in df.columns:
+                                lc, lnc = convert_ne_to_latlon(df[missing], e_col, n_col)
+                                df.loc[missing, 'lat'] = lc
+                                df.loc[missing, 'lon'] = lnc
+                                
+                        st.session_state['processed_df'] = df
+                        st.session_state['dashboard_selection'] = []
+                st.rerun()
+
+        with head_col3:
             if st.button(ui['clear_files'], width='stretch'):
                 st.session_state['files_loaded'] = False
                 st.session_state['processed_df'] = None
+                st.session_state['raw_tasklog'] = None
+                st.session_state['raw_record'] = None
                 if 'dashboard_selection' in st.session_state:
                     del st.session_state['dashboard_selection']
                 st.rerun()
