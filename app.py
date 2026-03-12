@@ -11,14 +11,14 @@ from datetime import datetime
 # --- UI Language Dictionary ---
 UI_TEXT = {
     'en': {
-        'upload_header': '📋 SiteWords: Data Upload',
+        'upload_header': '📋 Data Upload',
         'upload_info': 'To begin, select your Region and upload both TaskLog and Record files.',
         'region_mode': 'Region Mode (Dates/Decimals)',
         'upload_files': 'Upload Log Files',
         'parsing_spinner': 'Parsing and joining logs...',
         'tasklog_missing': 'No TaskLog mapped. Showing Records only.',
         'parse_error': 'Error parsing records. Ensure valid TaskLog and Record files.',
-        'dash_header': '📋 SiteWords: Dashboard',
+        'dash_header': '📋 Dashboard',
         'clear_files': '🗑️ Clear Loaded Files',
         'field_data_sel': '🗃️ Field Data Selection',
         'sel_caption': 'Select rows to include in the report. If none are selected, all rows will be exported.',
@@ -28,6 +28,10 @@ UI_TEXT = {
         'report_sel_help': 'Create report from selected rows.',
         'map_header': '📍 Site Map Overview',
         'map_caption': 'Interactive map view of the measurement points.',
+        'map_style_label': 'Map Style',
+        'style_light': 'Light (Default)',
+        'style_dark': 'Dark Mode',
+        'style_road': 'Road Map',
         'map_pt_name': 'Point Name',
         'map_no_coord': 'No valid geographic coordinates found to display on map.',
         'rep_header': '📄 Report Generator',
@@ -61,14 +65,14 @@ UI_TEXT = {
         'pdf_title': 'SiteWords Report'
     },
     'de': {
-        'upload_header': '📋 SiteWords: Daten-Upload',
+        'upload_header': '📋 Daten-Upload',
         'upload_info': 'Wählen Sie Ihre Region und laden Sie TaskLog- und Record-Dateien hoch, um zu beginnen.',
         'region_mode': 'Region Modus',
         'upload_files': 'Log-Dateien hochladen',
         'parsing_spinner': 'Logs werden analysiert und verknüpft...',
         'tasklog_missing': 'Kein TaskLog zugeordnet. Es werden nur Records angezeigt.',
         'parse_error': 'Fehler beim Lesen der Dateien. Stellen Sie sicher, dass TaskLog und Record gültig sind.',
-        'dash_header': '📋 SiteWords: Dashboard',
+        'dash_header': '📋 Dashboard',
         'clear_files': '🗑️ Geladene Dateien löschen',
         'field_data_sel': '🗃️ Felddaten-Auswahl',
         'sel_caption': 'Wählen Sie die Zeilen für den Bericht aus. Ohne Auswahl werden alle Zeilen exportiert.',
@@ -78,6 +82,10 @@ UI_TEXT = {
         'report_sel_help': 'Bericht aus ausgewählten Zeilen erstellen.',
         'map_header': '📍 Standortkarte Übersicht',
         'map_caption': 'Interaktive Kartenansicht der Messpunkte.',
+        'map_style_label': 'Kartenstil',
+        'style_light': 'Hell (Standard)',
+        'style_dark': 'Dunkelmodus',
+        'style_road': 'Straßenkarte',
         'map_pt_name': 'Punktname',
         'map_no_coord': 'Keine gültigen geografischen Koordinaten für die Karte gefunden.',
         'rep_header': '📄 Berichtsgenerator',
@@ -376,7 +384,6 @@ def process_coordinates(df):
     e_col = next((c for c in ['Measured E', 'Gemess. Rechtswert'] if c in df.columns), None)
     n_col = next((c for c in ['Measured N', 'Gemess. Hochwert'] if c in df.columns), None)
     
-    # Sadece dönüştürmeyi dene, henüz geçerlilik kontrolü yapma
     df['lat'] = df[lat_col].apply(parse_latlon_value) if lat_col else None
     df['lon'] = df[lon_col].apply(parse_latlon_value) if lon_col else None
     
@@ -393,18 +400,15 @@ def process_coordinates(df):
         return sign * (d + m / 60 + s / 3600)
 
     # 1. Total Station Defense
-    # TS cihazları Lat/Lon kolonlarına açı yazar (örn: 146 gon, 398 gon vb.)
-    # Eğer dosyadaki herhangi bir satırda Enlem > 90 veya Boylam > 180 ise bu kesinlikle Total Station verisidir.
     is_ts_file = False
     if df['lat'].max() > 90 or df['lat'].min() < -90 or df['lon'].max() > 180 or df['lon'].min() < -180:
         is_ts_file = True
 
-    # Eğer TS ise, sahte Lat/Lon (açı) değerlerini haritayı bozmaması için tamamen temizle
     if is_ts_file:
         df['lat'] = None
         df['lon'] = None
 
-    # 2. UTM Dönüşümü (Lat/Lon eksikse veya TS tarafından temizlenmişse)
+    # 2. UTM Dönüşümü
     for idx, row in df.iterrows():
         lat_val = row.get('lat')
         lon_val = row.get('lon')
@@ -417,7 +421,7 @@ def process_coordinates(df):
                     e_float = float(e_val)
                     n_float = float(n_val)
                     
-                    zone = 32 # Almanya için varsayılan Zone 32
+                    zone = 32 
                     
                     if e_float > 31000000 and e_float < 34000000:
                         zone = int(e_float / 1000000)
@@ -436,8 +440,7 @@ def process_coordinates(df):
                 except:
                     pass
                  
-    # 3. Quirks check: DMS disguised as DD? 
-    # (Sadece TS dosyası değilse ve hala düzgün gibi görünen lat/lon'lar varsa)
+    # 3. DMS maskelenmesi durumu
     if not is_ts_file:
         valid_mask = df['lat'].notna() & df['lon'].notna() & df['__e'].notna() & df['__n'].notna()
         use_dms = False
@@ -482,7 +485,6 @@ def process_coordinates(df):
 @st.cache_data(show_spinner=False)
 def parse_task_log_sessions(file_content, region_code):
     sessions = []
-    # EN/DE Mapping
     key_map = {
         "Date": "Date", "Datum": "Date", 
         "Time": "Time", "Zeit": "Time", 
@@ -514,7 +516,6 @@ def parse_task_log_sessions(file_content, region_code):
 def parse_record_log(file_content, region_code):
     lines = file_content.splitlines()
     
-    # EN/DE Header Row Detection
     header_index = next((i for i, line in enumerate(lines) if line.strip().startswith("Record Type") or line.strip().startswith("Datensatztyp")), -1)
     if header_index == -1: return None
     
@@ -522,7 +523,6 @@ def parse_record_log(file_content, region_code):
     df = pd.read_csv(io.StringIO('\n'.join(lines[header_index:])), sep='\t', decimal=decimal_sep)
     df.columns = df.columns.str.strip()
     
-    # Safely convert numeric columns for both EN/DE
     numeric_cols = ['Measured N', 'Measured E', 'Measured Elv', 'Gemess. Hochwert', 'Gemess. Rechtswert', 'Gemess. Höhe']
     for col in numeric_cols:
         if col in df.columns:
@@ -531,7 +531,6 @@ def parse_record_log(file_content, region_code):
             else:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
                 
-    # EN/DE Timestamp handling
     time_col_name = 'Local Time' if 'Local Time' in df.columns else 'Ortszeit'
     date_col_name = 'Date' if 'Date' in df.columns else 'Datum'
     
@@ -549,7 +548,6 @@ def parse_record_log(file_content, region_code):
 # --- Streamlit UI Setup ---
 st.set_page_config(page_title="SiteWords", layout="wide")
 
-# Initialize Session State
 if 'app_mode' not in st.session_state:
     st.session_state['app_mode'] = 'Dashboard'
 if 'report_data' not in st.session_state:
@@ -571,7 +569,6 @@ def show_dashboard():
     lang = st.session_state['lang']
     ui = UI_TEXT[lang]
     
-    # Show Upload screen if files not loaded yet
     if not st.session_state['files_loaded']:
         st.header(ui['upload_header']) 
         st.divider()
@@ -603,7 +600,6 @@ def show_dashboard():
                 df_sessions = parse_task_log_sessions(tasklog_string_data, region_code)
                 df_points = parse_record_log(record_string_data, region_code)
                 
-                # --- MERGING LOGIC ---
                 df = pd.DataFrame()
                 if df_sessions is not None and df_points is not None:
                     df_points = df_points.sort_values('timestamp')
@@ -617,23 +613,19 @@ def show_dashboard():
                     return
 
             if not df.empty:
-                # Determine UI Language based on Column Headers
                 if 'Gemess. Rechtswert' in df.columns or 'Datensatztyp' in df.columns:
                     st.session_state['lang'] = 'de'
                 else:
                     st.session_state['lang'] = 'en'
                     
-                # Advanced Coordinate Processing
                 df = process_coordinates(df)
                 
-                # Save processed data
                 st.session_state['processed_df'] = df
                 st.session_state['files_loaded'] = True
                 
                 st.rerun()
             return
 
-    # Show Main Dashboard if files loaded
     if st.session_state['files_loaded']:
         lang = st.session_state['lang']
         ui = UI_TEXT[lang]
@@ -642,7 +634,6 @@ def show_dashboard():
         with head_col1:
             st.header(ui['dash_header'])
         with head_col2:
-            # Region toggle in active dashboard
             new_region = st.selectbox(ui['region_mode'], ('EU', 'US'), index=0 if st.session_state['region_code'] == 'EU' else 1, label_visibility="collapsed")
             if new_region != st.session_state['region_code']:
                 st.session_state['region_code'] = new_region
@@ -659,9 +650,7 @@ def show_dashboard():
                         df = df_points
                     
                     if not df.empty:
-                        # Advanced Coordinate Processing
                         df = process_coordinates(df)
-                                
                         st.session_state['processed_df'] = df
                         st.session_state['dashboard_selection'] = []
                 st.rerun()
@@ -686,7 +675,16 @@ def show_dashboard():
             st.subheader(ui['field_data_sel'])
             st.caption(ui['sel_caption'])
             
-            df_display = df.copy().dropna(axis=1, how='all')
+            df_clean = df.copy().dropna(axis=1, how='all')
+            df_export = df_clean.copy() 
+            
+            df_display = df_clean.copy()
+            numeric_cols = df_display.select_dtypes(include=['float64', 'float32']).columns
+            for col in numeric_cols:
+                if st.session_state['region_code'] == 'EU':
+                    df_display[col] = df_display[col].apply(lambda x: f"{x:,.3f}".replace(',', 'X').replace('.', ',').replace('X', '.') if pd.notna(x) else x)
+                else:
+                    df_display[col] = df_display[col].apply(lambda x: f"{x:,.3f}" if pd.notna(x) else x)
             
             event = st.dataframe(
                 df_display, 
@@ -704,11 +702,11 @@ def show_dashboard():
             if not selected_rows_indices:
                 btn_text = ui['report_all']
                 help_text = ui['report_all_help']
-                df_to_report = df_display
+                df_to_report = df_export
             else:
                 btn_text = f"{ui['report_sel_base']} ({len(selected_rows_indices)} {ui['rows']})"
                 help_text = ui['report_sel_help']
-                df_to_report = df_display.iloc[selected_rows_indices]
+                df_to_report = df_export.iloc[selected_rows_indices]
 
             if st.button(btn_text, type="primary", help=help_text, width='stretch'):
                 st.session_state['report_data'] = df_to_report
@@ -716,23 +714,31 @@ def show_dashboard():
                 st.rerun()
 
         with col_map:
-            st.subheader(ui['map_header'])
-            st.caption(ui['map_caption'])
+            c_map_title, c_map_style = st.columns([3, 2])
+            with c_map_title:
+                st.subheader(ui['map_header'])
+                st.caption(ui['map_caption'])
+            with c_map_style:
+                # Kullanılan Map Stilleri - API Key gerektirmeyen temel pydeck / carto stilleri kullanıldı.
+                style_options = {
+                    ui['style_light']: 'light',
+                    ui['style_dark']: 'dark',
+                    ui['style_road']: 'road'
+                }
+                selected_style_name = st.selectbox(ui['map_style_label'], list(style_options.keys()), label_visibility="collapsed")
+                selected_map_style = style_options[selected_style_name]
             
             map_data_cols = ['lat', 'lon']
             
-            # Dynamic point name detection
             pt_col = "Point Name" if "Point Name" in df.columns else "Punktname"
             tooltip_html = "<b>Lat:</b> {lat}<br/><b>Lon:</b> {lon}"
             if pt_col in df.columns:
                 map_data_cols.append(pt_col)
                 tooltip_html = f"<b>{ui['map_pt_name']}:</b> {{{pt_col}}}<br/>" + tooltip_html
             
-            # Use only valid coordinates for map rendering
             map_data = df[map_data_cols].dropna(subset=['lat', 'lon'])
 
             if not map_data.empty:
-                # Center map dynamically based on mean coordinates of ALL valid points, not just the first one
                 center_lat = map_data['lat'].mean()
                 center_lon = map_data['lon'].mean()
                 
@@ -756,10 +762,8 @@ def show_dashboard():
                 if not sel_pts.empty:
                     layers.append(pdk.Layer('ScatterplotLayer', data=sel_pts, get_position='[lon, lat]', get_fill_color='[0, 255, 0]', get_radius=8, radius_units='pixels', pickable=True))
                 
-                carto_light_style = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json'
-                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=carto_light_style, tooltip={"html": tooltip_html}), height=600)
+                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=selected_map_style, tooltip={"html": tooltip_html}), height=600)
             else:
-                # Show explicit error message without rendering broken map
                 st.info(ui['map_no_coord'])
 
 def show_report_generator():
@@ -792,7 +796,6 @@ def show_report_generator():
     
     st.divider()
     
-    # --- Column Selection (Multi-Language Supported) ---
     all_columns = df_raw.columns.tolist()
     
     preferred_cols = [
@@ -826,8 +829,16 @@ def show_report_generator():
         
     df_report = df_raw[cols_to_include]
 
+    # Önizleme için tablo formatlamasını uygula
+    df_report_display = df_report.copy()
+    for col in df_report_display.select_dtypes(include=['float64', 'float32']).columns:
+        if st.session_state['region_code'] == 'EU':
+            df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.3f}".replace(',', 'X').replace('.', ',').replace('X', '.') if pd.notna(x) else x)
+        else:
+            df_report_display[col] = df_report_display[col].apply(lambda x: f"{x:,.3f}" if pd.notna(x) else x)
+
     st.subheader(f"{ui['rep_preview']} ({len(df_report)} {ui['rows']})")
-    st.dataframe(df_report, width='stretch', hide_index=True)
+    st.dataframe(df_report_display, width='stretch', hide_index=True)
     
     header_info = {
         "project": r_project, "wo": r_wo, "client": r_client,
@@ -886,7 +897,7 @@ def show_report_generator():
             key="btn_download_html"
         )
 
-# --- APP MODES ---
+# --- ANA UYGULAMA YÖNLENDİRİCİSİ ---
 if st.session_state['app_mode'] == 'Dashboard':
     show_dashboard()
 elif st.session_state['app_mode'] == 'Report':
