@@ -685,48 +685,54 @@ def create_pdf(df, header_info, lang):
     return output
 
 # --- Veri Ayrıştırma Fonksiyonları ---
-def parse_latlon_value(coord_str):
-    if pd.isna(coord_str): return math.nan
-    if isinstance(coord_str, (int, float)): return float(coord_str)
-    
-    coord_str = str(coord_str).strip().replace(',', '.')
-    
-    if '°' in coord_str or "'" in coord_str or '"' in coord_str:
-        match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])?', coord_str)
-        if not match: return math.nan
-        deg = float(match.group(1))
-        min = float(match.group(2))
-        sec = float(match.group(3))
-        direc = match.group(4) if match.lastindex >= 4 else None
-        dd = deg + min / 60 + sec / 3600
-        if direc in ['S', 'W']: dd *= -1
-        return dd
-    else:
-        try: 
-            return float(coord_str)
-        except (ValueError, TypeError): 
-            return math.nan
-
 @st.cache_data(show_spinner=False)
-def process_coordinates(df):
+def process_coordinates(df, region_code):
     """
     Gelişmiş koordinat işleyicisi:
-    1. Satır bazında Total Station açılarının (HA/VA) Lat/Lon sanılmasını önler.
-    2. Geçerli Lat/Lon yoksa UTM'den dönüştürme yapar. (Geçersiz büyük sayıları engeller)
-    3. Cihazın DMS değerini Noktalı Derece (DD) gibi gizlediği hataları bulup çözer.
+    1. Bölgesel (EU/US) ondalık ayrıştırıcı kullanır.
+    2. Satır bazında Total Station açılarının (HA/VA) Lat/Lon sanılmasını önler.
+    3. Geçerli Lat/Lon yoksa UTM'den dönüştürme yapar. 
     """
+    def parse_latlon_value_regional(coord_str):
+        if pd.isna(coord_str): return math.nan
+        if isinstance(coord_str, (int, float)): return float(coord_str)
+        
+        coord_str = str(coord_str).strip()
+        
+        if '°' in coord_str or "'" in coord_str or '"' in coord_str:
+            if region_code == 'EU':
+                coord_str = coord_str.replace(',', '.')
+            match = re.search(r'(\d+)\D+(\d+)\D+([\d.]+)\D*([NSEW])?', coord_str)
+            if not match: return math.nan
+            deg = float(match.group(1))
+            min = float(match.group(2))
+            sec = float(match.group(3))
+            direc = match.group(4) if match.lastindex >= 4 else None
+            dd = deg + min / 60 + sec / 3600
+            if direc in ['S', 'W']: dd *= -1
+            return dd
+        else:
+            if region_code == 'EU':
+                coord_str = coord_str.replace('.', '').replace(',', '.')
+            else:
+                coord_str = coord_str.replace(',', '')
+            try: 
+                return float(coord_str)
+            except (ValueError, TypeError): 
+                return math.nan
+
     lat_col = next((c for c in ['HA / Lat', 'Hz / Breite'] if c in df.columns), None)
     lon_col = next((c for c in ['VA / Long', 'V / Länge'] if c in df.columns), None)
     e_col = next((c for c in ['Measured E', 'Gemess. Rechtswert'] if c in df.columns), None)
     n_col = next((c for c in ['Measured N', 'Gemess. Hochwert'] if c in df.columns), None)
     
     if lat_col:
-        df['lat'] = pd.to_numeric(df[lat_col].apply(parse_latlon_value), errors='coerce')
+        df['lat'] = df[lat_col].apply(parse_latlon_value_regional)
     else:
         df['lat'] = math.nan
         
     if lon_col:
-        df['lon'] = pd.to_numeric(df[lon_col].apply(parse_latlon_value), errors='coerce')
+        df['lon'] = df[lon_col].apply(parse_latlon_value_regional)
     else:
         df['lon'] = math.nan
         
@@ -737,7 +743,7 @@ def process_coordinates(df):
         df['__e'] = math.nan
         df['__n'] = math.nan
 
-    # 1. Total Station Koruması (Yalnızca geçersiz olan AÇI satırlarını NaN yapar)
+    # 1. Total Station Koruması (Sadece geçersiz olan AÇI satırlarını NaN yapar)
     invalid_mask = (df['lat'] > 90) | (df['lat'] < -90) | (df['lon'] > 180) | (df['lon'] < -180)
     df.loc[invalid_mask, ['lat', 'lon']] = math.nan
 
@@ -751,7 +757,6 @@ def process_coordinates(df):
                     
                     zone = 32 
                     
-                    # 8 Haneli UTM düzeltmesi (Almanya için)
                     if 31000000 < e_float < 34000000:
                         zone = int(e_float / 1000000)
                         e_float = e_float % 10000000
@@ -759,7 +764,7 @@ def process_coordinates(df):
                         zone = int(e_float / 100000)
                         e_float = e_float % 1000000
 
-                    # UTM Geçerlilik Sınırı: Aşırı büyük lokal State Plane koordinatlarını (örn: 4.900.000) haritaya UTM gibi zorlamamak için
+                    # UTM Geçerlilik Sınırı: Aşırı büyük lokal koordinatları (örn: US State Plane) haritaya zorlamamak için
                     if 100000 < e_float < 999999 and 0 < n_float < 10000000:
                         epsg_code = f"epsg:{32600 + zone}"
                         transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
@@ -780,7 +785,7 @@ def process_coordinates(df):
         s = (val - d - m / 100) * 10000
         return sign * (d + m / 60 + s / 3600)
                  
-    # 3. DMS maskelenmesi durumu (GNSS verilerinde)
+    # 3. DMS maskelenmesi durumu
     valid_mask = df['lat'].notna() & df['lon'].notna() & df['__e'].notna() & df['__n'].notna()
     use_dms = False
     
@@ -799,7 +804,6 @@ def process_coordinates(df):
              elif test_lon > 0:
                  zone = int(test_lon / 6) + 31
              
-             # UTM koordinatı ise doğrula
              if 100000 < e_val < 999999 and 0 < n_val < 10000000:
                  epsg_code = f"epsg:{32600 + zone}" if test_lat >= 0 else f"epsg:{32700 + zone}"
                  transformer = Transformer.from_crs(epsg_code, "epsg:4326", always_xy=True)
@@ -828,7 +832,7 @@ def parse_task_log_sessions(file_content, region_code):
     sessions = []
     # Dil varyasyonlarını destekleyen anahtar haritalama (EN/DE/FR/RO/IT)
     key_map = {
-        "Date": "Date", "Datum": "Date", "Date": "Date", "Data": "Date",
+        "Date": "Date", "Datum": "Date", "Data": "Date",
         "Time": "Time", "Zeit": "Time", "Heure": "Time", "Ora": "Time",
         "Work Order": "Work Order", "Arbeitsauftrag": "Work Order", "Bon de Travail": "Work Order", "Comandă de Lucru": "Work Order", "Ordine di Lavoro": "Work Order",
         "Project": "Project", "Projekt": "Project", "Projet": "Project", "Proiect": "Project", "Progetto": "Project"
@@ -877,7 +881,14 @@ def parse_record_log(file_content, region_code):
     if header_index == -1: return None
     
     decimal_sep = '.' if region_code == 'US' else ','
-    df = pd.read_csv(io.StringIO('\n'.join(lines[header_index:])), sep='\t', decimal=decimal_sep)
+    thousands_sep = ',' if region_code == 'US' else '.'
+    
+    df = pd.read_csv(
+        io.StringIO('\n'.join(lines[header_index:])), 
+        sep='\t', 
+        decimal=decimal_sep,
+        thousands=thousands_sep
+    )
     df.columns = df.columns.str.strip()
     
     # Tüm yeni teknik kolon varyasyonlarını sayısal tipe dönüştürme listesi
@@ -893,12 +904,16 @@ def parse_record_log(file_content, region_code):
         'Design Offset', 'Sollabstand',
         'Measured Offset', 'Gemess. Abstand'
     ]
+    
     for col in numeric_cols:
         if col in df.columns:
             if df[col].dtype == object:
-                df[col] = pd.to_numeric(df[col].str.replace(',', '.'), errors='coerce')
-            else:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Manuel Güvenli Temizlik (Binlik ve Ondalık ayrımları için)
+                if region_code == 'EU':
+                    clean_str = df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+                else:
+                    clean_str = df[col].astype(str).str.replace(',', '', regex=False)
+                df[col] = pd.to_numeric(clean_str, errors='coerce')
                 
     time_col_name = next((c for c in ['Local Time', 'Ortszeit', 'Heure Locale', 'Ora Locală', 'Ora Locale'] if c in df.columns), None)
     date_col_name = next((c for c in ['Date', 'Datum', 'Date', 'Dată', 'Data'] if c in df.columns), None)
@@ -995,8 +1010,8 @@ def show_dashboard():
                     return
 
             if not df.empty:
-                df = process_coordinates(df)
-                df = translate_columns(df, st.session_state['lang']) # Tablo başlıklarını çevir
+                df = process_coordinates(df, region_code)
+                df = translate_columns(df, st.session_state['lang'])
                 
                 st.session_state['processed_df'] = df
                 st.session_state['files_loaded'] = True
@@ -1028,7 +1043,7 @@ def show_dashboard():
                         df = df_points
                     
                     if not df.empty:
-                        df = process_coordinates(df)
+                        df = process_coordinates(df, new_region)
                         df = translate_columns(df, st.session_state['lang'])
                         st.session_state['processed_df'] = df
                         st.session_state['dashboard_selection'] = []
@@ -1058,7 +1073,7 @@ def show_dashboard():
                             df = df_points
                         
                         if not df.empty:
-                            df = process_coordinates(df)
+                            df = process_coordinates(df, st.session_state['region_code'])
                             df = translate_columns(df, st.session_state['lang'])
                             st.session_state['processed_df'] = df
                 st.rerun()
@@ -1205,8 +1220,6 @@ def show_report_generator():
     
     all_columns = df_raw.columns.tolist()
     
-    # Rapor ekranında varsayılan olarak tikli (seçili) gelecek olan kolonlar.
-    # Yeni Aplikasyon kolonları (Cut/Fill, Design Elv) buraya eklendi.
     preferred_cols = [
         ui.get('col_Sub_Type', 'Sub Type'),
         ui.get('col_Point_Name', 'Point Name'),
