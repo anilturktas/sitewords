@@ -855,8 +855,9 @@ def parse_task_log_sessions(file_content, region_code):
     if df.empty: return None
     
     datetime_str = df['Date'] + ' ' + df['Time']
-    # Güvenli zaman damgası çözücü (Flexible Datetime)
-    df['timestamp'] = pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code == 'EU'))
+    # Güvenli zaman damgası çözücü (Esnek Tarih Algılayıcı)
+    parsed = pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code == 'EU'))
+    df['timestamp'] = parsed.fillna(pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code != 'EU')))
     
     return df.dropna(subset=['timestamp']).sort_values('timestamp')[['timestamp', 'Project', 'Work Order']]
 
@@ -906,8 +907,10 @@ def parse_record_log(file_content, region_code):
         time_series = df[time_col_name].astype(str).str.replace(',', '.', regex=False)
         datetime_str = df[date_col_name].astype(str) + ' ' + time_series
         
-        # Güvenli zaman damgası çözücü
-        df['timestamp'] = pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code == 'EU'))
+        # Güvenli zaman damgası çözücü (Esnek Tarih Algılayıcı)
+        parsed = pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code == 'EU'))
+        df['timestamp'] = parsed.fillna(pd.to_datetime(datetime_str, errors='coerce', dayfirst=(region_code != 'EU')))
+        
         return df.dropna(subset=['timestamp']).sort_values('timestamp')
     
     return None
